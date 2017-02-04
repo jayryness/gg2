@@ -134,7 +134,7 @@ private:
 };
 
 template<class T> template<class T_Allocator>
-Span<T>::Span(Array<T, T_Allocator> const& a)
+Span<T>::Span(Array<std::remove_const_t<T>, T_Allocator> const& a)
     : first_(a.begin())
     , count_(a.count()) {
 }

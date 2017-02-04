@@ -3,6 +3,7 @@
 #define GG_HASH_H
 
 #include "MiscUtil.h"
+#include "Span.h"
 
 namespace gg {
 
@@ -53,7 +54,8 @@ inline uint32_t CombineHash32(uint32_t a, uint32_t b) {
     return result;
 }
 
-uint32_t BufferHash32(void const* buffer , size_t size, uint32_t seed = 0xdecafbad);
+uint32_t BufferHash32(void const* buffer, size_t size, uint32_t seed = 0xdecafbad);
+uint32_t BufferHash32(Span<int8_t const> data, uint32_t seed = 0xdecafbad);
 uint32_t StringHash32(char const* str, uint32_t seed = 0xdecafbad);
 
 struct HashedString {
@@ -122,6 +124,10 @@ GG_NO_INLINE inline uint32_t BufferHash32(void const* buffer, size_t size, uint3
 
 inline uint32_t StringHash32(char const* data, uint32_t seed) {
     return BufferHash32(data, strlen(data), seed);
+}
+
+inline uint32_t BufferHash32(Span<int8_t const> span, uint32_t seed) {
+    return BufferHash32(span.begin(), span.count(), seed);
 }
 
 }

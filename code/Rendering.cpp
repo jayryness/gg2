@@ -216,9 +216,17 @@ struct ResourceIdTraits {
         return id.value - 1;
     }
 };
+template<> struct ResourceIdTraitsDefault<Rendering::BlueprintId> : public ResourceIdTraits<Rendering::BlueprintId> {};
+template<> struct ResourceIdTraitsDefault<Rendering::FramebufferId> : public ResourceIdTraits<Rendering::FramebufferId> {};
 template<> struct ResourceIdTraitsDefault<Rendering::PipelineId> : public ResourceIdTraits<Rendering::PipelineId> {};
 template<> struct ResourceIdTraitsDefault<Rendering::ImageId> : public ResourceIdTraits<Rendering::ImageId> {};
 template<> struct ResourceIdTraitsDefault<Rendering::TilesetId> : public ResourceIdTraits<Rendering::TilesetId> {};
+
+struct Rendering::Hub::BlueprintResource : public Resource<BlueprintId> {
+};
+
+struct Rendering::Hub::FramebufferResource : public Resource<FramebufferId> {
+};
 
 struct Rendering::Hub::PipelineResource : public Resource<PipelineId> {
     using Resource::Resource;
@@ -322,7 +330,17 @@ Rendering::Hub::~Hub() {
     }
 }
 
-Rendering::PipelineId Rendering::Hub::createPipeline(PipelineDefinition const& definition, WindowHandle displayWindow) {
+Rendering::BlueprintId Rendering::Hub::createBlueprint(RenderBlueprintDescription const& blueprint) {
+    Platform& platform = *platform_;
+    return{};
+}
+
+Rendering::FramebufferId Rendering::Hub::createFramebuffer(BlueprintId const& blueprintId, unsigned width, unsigned height, WindowHandle displayWindowOrNull) {
+    Platform& platform = *platform_;
+    return {};
+}
+
+Rendering::PipelineId Rendering::Hub::createPipeline(RenderPipelineDescription const& description, WindowHandle displayWindow) {
     Platform& platform = *platform_;
     VkDevice const device = platform.device;
     if (presentationSurfaces_.count() && presentationSurfaces_.find(displayWindow)) {
@@ -334,12 +352,12 @@ Rendering::PipelineId Rendering::Hub::createPipeline(PipelineDefinition const& d
 
     {
         VkShaderModuleCreateInfo createInfo = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-        createInfo.codeSize = definition.vertexStage.shaderBytecode.count();
-        createInfo.pCode = (uint32_t const*)definition.vertexStage.shaderBytecode.begin();
+        createInfo.codeSize = description.vertexStage.shaderBytecode.count();
+        createInfo.pCode = (uint32_t const*)description.vertexStage.shaderBytecode.begin();
         VkResult result = vkCreateShaderModule(device, &createInfo, nullptr, &pipelineResource.vertexShader);
         assert(result == VK_SUCCESS);
-        createInfo.codeSize = definition.fragmentStage.shaderBytecode.count();
-        createInfo.pCode = (uint32_t const*)definition.fragmentStage.shaderBytecode.begin();
+        createInfo.codeSize = description.fragmentStage.shaderBytecode.count();
+        createInfo.pCode = (uint32_t const*)description.fragmentStage.shaderBytecode.begin();
         result = vkCreateShaderModule(device, &createInfo, nullptr, &pipelineResource.fragmentShader);
         assert(result == VK_SUCCESS);
     }

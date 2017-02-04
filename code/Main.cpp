@@ -34,8 +34,8 @@ int main(int argc, char* argv[]) {
     gg::Os os;
     GG_SCOPE_EXIT(std::cout << "Bye!\n"; os.Sleep(200));
 
-    std::cout << "Loading pipeline definitions...";
-    gg::PipelineDefinition pipelineDef = gg::PipelineDefinition::LoadFromFiles("shaders/Sprite.vertex.spv", "shaders/Sprite.fragment.spv");
+    std::cout << "Loading pipeline descriptions...";
+    gg::RenderPipelineDescription pipelineDef = gg::RenderPipelineDescription::LoadFromFiles("shaders/Sprite.vertex.spv", "shaders/Sprite.fragment.spv");
     std::cout << "done\n";
 
     std::stringstream debugPrint;

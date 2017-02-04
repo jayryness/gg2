@@ -64,17 +64,29 @@ struct RenderFormat {
     Type type;
 };
 
-struct PipelineDefinition {
-    static PipelineDefinition LoadFromFiles(char const* vertexFilename, char const* fragmentFilename);
+struct RenderBlueprintDescription {
+};
+
+struct RenderPipelineDescriptionData {
+    Array<int8_t> vertexBytecode;
+    Array<int8_t> fragmentBytecode;
+};
+
+struct RenderPipelineDescription {
+    static RenderPipelineDescription LoadFromFiles(char const* vertexFilename, char const* fragmentFilename);
+    static RenderPipelineDescription MakeFromData(RenderPipelineDescriptionData&& data);
+
     struct Stage {
-        gg::Array<int8_t> shaderBytecode;
+        Span<int8_t const> shaderBytecode;
     };
+
     Stage vertexStage;
     Stage fragmentStage;
     uint32_t hash;
+    RenderPipelineDescriptionData retainedData;
 };
 
-inline uint32_t Hash32(PipelineDefinition const& pipelineDef) {
+inline uint32_t Hash32(RenderPipelineDescription const& pipelineDef) {
     return pipelineDef.hash;
 }
 

@@ -16,15 +16,17 @@ public:
 
     typedef void* WindowHandle;
 
+    struct BlueprintId { unsigned value; };
+    struct FramebufferId { unsigned value; };
     struct PipelineId { unsigned value; };
     struct ImageId { unsigned value; };
-    struct TargetId { unsigned value; };
     struct TilesetId { unsigned value; };
     struct SpriteId { unsigned value; };
 
+    struct Blueprint;
+    struct Framebuffer;
     struct Pipeline;
     struct Image;
-    struct Target;
     struct Tileset;
     struct Sprite;
 
@@ -78,10 +80,14 @@ public:
     Rendering startRendering(PipelineId pipelineId);
     void submitRendering(Rendering&& rendering);
 
-    PipelineId createPipeline(PipelineDefinition const& definition, WindowHandle displayWindow);
+    BlueprintId createBlueprint(RenderBlueprintDescription const& blueprint);
+    FramebufferId createFramebuffer(BlueprintId const& blueprintId, unsigned width, unsigned height, WindowHandle displayWindowOrNull);
+    PipelineId createPipeline(RenderPipelineDescription const& description, WindowHandle displayWindow);
     ImageId createImage(Span<uint8_t> const& data, RenderFormat const& format, unsigned width, unsigned height);
     TilesetId createTileset(Span<uint8_t> const& data, RenderFormat const& format, unsigned width, unsigned height, unsigned tileWidth, unsigned tileHeight);
 
+    void destroyBlueprint(BlueprintId id);
+    void destroyFramebuffer(FramebufferId id);
     void destroyPipeline(PipelineId id);
     void destroyImage(ImageId id);
     void destroyTileset(TilesetId id);
@@ -89,6 +95,8 @@ public:
 private:
     struct Platform;
     struct PresentationSurface;
+    struct BlueprintResource;
+    struct FramebufferResource;
     struct PipelineResource;
     struct ImageResource;
     struct TilesetResource;
@@ -97,6 +105,8 @@ private:
 
     std::unique_ptr<Platform> platform_;
     Table<WindowHandle, PresentationSurface> presentationSurfaces_;
+    ResourcePool<BlueprintId, BlueprintResource> blueprintResources_;
+    ResourcePool<FramebufferId, FramebufferResource> framebufferResources_;
     ResourcePool<PipelineId, PipelineResource> pipelineResources_;
     ResourcePool<ImageId, ImageResource> imageResources_;
     ResourcePool<TilesetId, TilesetResource> tilesetResources_;
@@ -130,9 +140,23 @@ protected:
     T_Id id_;
 };
 
+struct Rendering::Blueprint : Rendering::IdOwner<BlueprintId, &Hub::destroyBlueprint>
+{
+    Blueprint(Hub* hub, RenderBlueprintDescription const& description)
+        : IdOwner(hub, hub->createBlueprint(description)) {
+    }
+};
+
+struct Rendering::Framebuffer : Rendering::IdOwner<FramebufferId, &Hub::destroyFramebuffer>
+{
+    Framebuffer(Hub* hub, BlueprintId blueprintId, unsigned width, unsigned height, WindowHandle displayWindowOrNull)
+        : IdOwner(hub, hub->createFramebuffer(blueprintId, width, height, displayWindowOrNull)) {
+    }
+};
+
 struct Rendering::Pipeline : Rendering::IdOwner<PipelineId, &Hub::destroyPipeline> {
-    Pipeline(Hub* hub, PipelineDefinition const& definition, void* displayWindow)
-        : IdOwner(hub, hub->createPipeline(definition, displayWindow)) {
+    Pipeline(Hub* hub, RenderPipelineDescription const& description, void* displayWindow)
+        : IdOwner(hub, hub->createPipeline(description, displayWindow)) {
     }
 };
 

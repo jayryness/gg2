@@ -19,7 +19,7 @@ public:
         , count_(0) {
     }
     template<class T_Allocator>
-    Span(Array<T, T_Allocator> const& a);
+    Span(Array<std::remove_const_t<T>, T_Allocator> const& a);
     Span(Span&& source)
         : first_(std::exchange(source.first_, nullptr))
         , count_(std::exchange(source.count_, 0)) {

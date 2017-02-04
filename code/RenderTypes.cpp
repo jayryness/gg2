@@ -16,14 +16,23 @@ inline Array<int8_t> LoadEntireFile(char const* filename) {
     return data;
 }
 
-PipelineDefinition PipelineDefinition::LoadFromFiles(char const* vertexFilename, char const* fragmentFilename) {
-    PipelineDefinition result = {
-        {LoadEntireFile(vertexFilename)},
-        {LoadEntireFile(fragmentFilename)}
+RenderPipelineDescription RenderPipelineDescription::MakeFromData(RenderPipelineDescriptionData&& data) {
+    RenderPipelineDescription result = {
+        {data.vertexBytecode},
+        {data.fragmentBytecode},
+        CombineHash32(
+            BufferHash32(data.vertexBytecode),
+            BufferHash32(data.fragmentBytecode)),
+        std::move(data)
     };
     result.hash = BufferHash32(result.vertexStage.shaderBytecode.begin(), result.vertexStage.shaderBytecode.count());
     result.hash = CombineHash32(result.hash, BufferHash32(result.fragmentStage.shaderBytecode.begin(), result.fragmentStage.shaderBytecode.count()));
     return result;
+}
+
+RenderPipelineDescription RenderPipelineDescription::LoadFromFiles(char const* vertexFilename, char const* fragmentFilename) {
+    RenderPipelineDescriptionData data = {LoadEntireFile(vertexFilename), LoadEntireFile(fragmentFilename)};
+    return MakeFromData(std::move(data));
 }
 
 }
