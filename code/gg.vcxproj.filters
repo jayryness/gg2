@@ -1,0 +1,60 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="Main.cpp" />
+    <ClCompile Include="Allocator.cpp" />
+    <ClCompile Include="Rendering.cpp" />
+    <ClCompile Include="VulkanUtil.cpp">
+      <Filter>Vulkan</Filter>
+    </ClCompile>
+    <ClCompile Include="OsWin.cpp">
+      <Filter>Win</Filter>
+    </ClCompile>
+    <ClCompile Include="WindowWin.cpp">
+      <Filter>Win</Filter>
+    </ClCompile>
+    <ClCompile Include="RenderTypes.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Window.h" />
+    <ClInclude Include="Os.h" />
+    <ClInclude Include="MiscUtil.h" />
+    <ClInclude Include="Rendering.h" />
+    <ClInclude Include="Allocator.h" />
+    <ClInclude Include="Array.h" />
+    <ClInclude Include="Simd.h" />
+    <ClInclude Include="Span.h" />
+    <ClInclude Include="Table.h" />
+    <ClInclude Include="Hash.h" />
+    <ClInclude Include="Set.h" />
+    <ClInclude Include="Ring.h" />
+    <ClInclude Include="ResourcePool.h" />
+    <ClInclude Include="MathUtil.h" />
+    <ClInclude Include="VulkanUtil.h">
+      <Filter>Vulkan</Filter>
+    </ClInclude>
+    <ClInclude Include="RenderTypes.h" />
+    <ClInclude Include="Sprite.hlsl">
+      <Filter>Shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="Shaders.hxx">
+      <Filter>Shaders</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Win">
+      <UniqueIdentifier>{0b5ac714-ea8c-4702-8cf2-3f824932d448}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Vulkan">
+      <UniqueIdentifier>{12c3d74e-7242-49c9-938e-46948966f7f1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders">
+      <UniqueIdentifier>{9c72e1b0-2e32-481a-9df6-1957bba1d472}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="MiscUtilWin.inl">
+      <Filter>Win</Filter>
+    </None>
+  </ItemGroup>
+</Project>
