@@ -44,4 +44,10 @@ $RECYCLE.BIN/
 .AppleDesktop
 Network Trash Folder
 Temporary Items
+code/x64
 .apdisk
+*.suo
+*.db
+*.opendb
+*.user
+*.obj
