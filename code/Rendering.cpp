@@ -419,17 +419,9 @@ struct ResourceIdTraits {
         return id.value - 1;
     }
 };
-template<> struct ResourceIdTraitsDefault<Rendering::BlueprintId> : public ResourceIdTraits<Rendering::BlueprintId> {};
-template<> struct ResourceIdTraitsDefault<Rendering::FramebufferId> : public ResourceIdTraits<Rendering::FramebufferId> {};
 template<> struct ResourceIdTraitsDefault<Rendering::PipelineId> : public ResourceIdTraits<Rendering::PipelineId> {};
 template<> struct ResourceIdTraitsDefault<Rendering::ImageId> : public ResourceIdTraits<Rendering::ImageId> {};
 template<> struct ResourceIdTraitsDefault<Rendering::TilesetId> : public ResourceIdTraits<Rendering::TilesetId> {};
-
-struct Rendering::Hub::BlueprintResource : public Resource<BlueprintId> {
-};
-
-struct Rendering::Hub::FramebufferResource : public Resource<FramebufferId> {
-};
 
 struct Rendering::Hub::PipelineResource : public Resource<PipelineId> {
     using Resource::Resource;
@@ -535,103 +527,7 @@ Rendering::Hub::~Hub() {
     }
 }
 
-Rendering::BlueprintId Rendering::Hub::createBlueprint(RenderBlueprintDescription const& blueprint) {
-    Platform& platform = *platform_;
-
-    auto subpassDescriptions = GG_STACK_ARRAY(VkSubpassDescription, blueprint.passes.count());
-    auto attachmentDescriptions = GG_STACK_ARRAY(VkAttachmentDescription, blueprint.targets.count());
-    unsigned const inputAttachmentReferencesCount = gg::CountOver(blueprint.attachments, GG_ITER_LAMBDA(it.usage == RenderAttachmentUsage::cInput));
-    unsigned const colorAttachmentReferencesCount = gg::CountOver(blueprint.attachments, GG_ITER_LAMBDA(it.usage == RenderAttachmentUsage::cColor));
-    unsigned const depthAttachmentReferencesCount = gg::CountOver(blueprint.attachments, GG_ITER_LAMBDA(it.usage == RenderAttachmentUsage::cDepth));
-    auto inputAttachmentReferences = GG_STACK_ARRAY(VkAttachmentReference, inputAttachmentReferencesCount);
-    auto colorAttachmentReferences = GG_STACK_ARRAY(VkAttachmentReference, colorAttachmentReferencesCount);
-    auto depthAttachmentReferences = GG_STACK_ARRAY(VkAttachmentReference, depthAttachmentReferencesCount);
-    auto dependencies = GG_STACK_ARRAY(VkSubpassDependency, blueprint.dependencies.count());
-
-    for (unsigned attachment = 0; attachment < blueprint.targets.count(); attachment++) {
-        VkAttachmentDescription& desc = attachmentDescriptions[attachment];
-        RenderBlueprintDescription::Target const& target = blueprint.targets[attachment];
-        desc.flags = 0;
-        desc.format = gg::vk::ConvertFormat(blueprint.targets[attachment].format);
-        desc.samples = VK_SAMPLE_COUNT_1_BIT;
-        desc.loadOp = gg::vk::ConvertLoadOp(target.loadOp);
-        desc.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        desc.stencilLoadOp = desc.loadOp;
-        desc.stencilStoreOp = desc.stencilStoreOp;
-        desc.initialLayout = target.format.isDepth() ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        desc.finalLayout = desc.initialLayout;
-    }
-
-    for (unsigned subpass = 0; subpass < blueprint.passes.count(); subpass++) {
-        VkSubpassDescription& desc = subpassDescriptions[subpass];
-        RenderBlueprintDescription::Pass const& pass = blueprint.passes[subpass];
-
-        desc.flags = 0;
-        desc.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        desc.inputAttachmentCount = gg::CountOver(blueprint.attachments, GG_ITER_LAMBDA(it.passId == pass.id && it.usage == RenderAttachmentUsage::cInput));
-        desc.pInputAttachments = inputAttachmentReferences;
-        desc.colorAttachmentCount = gg::CountOver(blueprint.attachments, GG_ITER_LAMBDA(it.passId == pass.id && it.usage == RenderAttachmentUsage::cColor));
-        desc.pColorAttachments = colorAttachmentReferences;
-        unsigned depthAttachmentCount = gg::CountOver(blueprint.attachments, GG_ITER_LAMBDA(it.passId == pass.id && it.usage == RenderAttachmentUsage::cDepth));;
-        desc.pDepthStencilAttachment = depthAttachmentCount ? depthAttachmentReferences : nullptr;
-        assert(depthAttachmentCount <= 1);
-        desc.preserveAttachmentCount = 0;
-        desc.pPreserveAttachments = nullptr;
-
-        for (RenderBlueprintDescription::Attachment const& attachment : blueprint.attachments) {
-            if (attachment.passId != pass.id) continue;
-
-            unsigned found = gg::FindIndex(blueprint.targets, GG_ITER_LAMBDA(it.id == attachment.targetId));
-            assert(found != gg::cIndexNotFound);
-
-            switch(attachment.usage) {
-            case RenderAttachmentUsage::cInput:
-                *inputAttachmentReferences++ = {found, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-                break;
-            case RenderAttachmentUsage::cColor:
-                *colorAttachmentReferences++ = {found, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-                break;
-            case RenderAttachmentUsage::cDepth:
-                *depthAttachmentReferences++ = {found, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-                break;
-            }
-        }
-    }
-
-    for (unsigned dependency = 0; dependency < blueprint.dependencies.count(); dependency++) {
-        unsigned foundSrc = gg::FindIndex(blueprint.passes, GG_ITER_LAMBDA(it.id == blueprint.dependencies[dependency].src));
-        unsigned foundDst = gg::FindIndex(blueprint.passes, GG_ITER_LAMBDA(it.id == blueprint.dependencies[dependency].dst));
-        assert(foundSrc != gg::cIndexNotFound && foundDst != gg::cIndexNotFound);
-        dependencies[dependency] = {
-            foundSrc, foundDst,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 
-            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-            VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
-            0
-        };
-    }
-
-    VkRenderPassCreateInfo createInfo = {VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
-    createInfo.attachmentCount = blueprint.targets.count();
-    createInfo.pAttachments = attachmentDescriptions;
-    createInfo.subpassCount = blueprint.passes.count();
-    createInfo.pSubpasses = subpassDescriptions;
-    createInfo.dependencyCount = blueprint.dependencies.count();
-    createInfo.pDependencies = dependencies;
-
-    VkRenderPass renderPass = {};
-    VkResult result = vkCreateRenderPass(platform.device, &createInfo, nullptr, &renderPass);
-    assert(result == VK_SUCCESS);
-    return blueprintResources_.add({});
-}
-
-Rendering::FramebufferId Rendering::Hub::createFramebuffer(BlueprintId const& blueprintId, unsigned width, unsigned height, WindowHandle displayWindowOrNull) {
-    Platform& platform = *platform_;
-    return {};
-}
-
-Rendering::PipelineId Rendering::Hub::createPipeline(RenderPipelineDescription const& description, WindowHandle displayWindow) {
+Rendering::PipelineId Rendering::Hub::createPipeline(WindowHandle displayWindow) {
     Platform& platform = *platform_;
     VkDevice const device = platform.device;
     if (presentationSurfaces_.count() && presentationSurfaces_.find(displayWindow)) {
@@ -640,18 +536,6 @@ Rendering::PipelineId Rendering::Hub::createPipeline(RenderPipelineDescription c
     }
 
     PipelineResource pipelineResource = {device, {}};
-
-    {
-        VkShaderModuleCreateInfo createInfo = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-        createInfo.codeSize = description.vertexStage.shaderBytecode.count();
-        createInfo.pCode = (uint32_t const*)description.vertexStage.shaderBytecode.begin();
-        VkResult result = vkCreateShaderModule(device, &createInfo, nullptr, &pipelineResource.vertexShader);
-        assert(result == VK_SUCCESS);
-        createInfo.codeSize = description.fragmentStage.shaderBytecode.count();
-        createInfo.pCode = (uint32_t const*)description.fragmentStage.shaderBytecode.begin();
-        result = vkCreateShaderModule(device, &createInfo, nullptr, &pipelineResource.fragmentShader);
-        assert(result == VK_SUCCESS);
-    }
 
     {
         VkExtent2D extent;
@@ -1003,10 +887,6 @@ Rendering::TilesetId Rendering::Hub::createTileset(Span<uint8_t> const& data, Re
     return tilesetResources_.add(std::move(tilesetResource));
 }
 
-void Rendering::Hub::destroyBlueprint(BlueprintId id) {
-    blueprintResources_.remove(id);
-}
-
 void Rendering::Hub::destroyPipeline(PipelineId id) {
     pipelineResources_.remove(id);
 }
@@ -1122,22 +1002,5 @@ void Rendering::Hub::submitRendering(Rendering&& rendering) {
 
     renderingFreeList_.addLast(std::move(rendering.reset()));
 }
-
-namespace DefaultBlueprint {
-    enum { cMainColorTarget };
-    enum { cMainColorPass };
-
-    static RenderBlueprintDescription::Target const targets[] = {
-        {GG_RENDERFORMAT(cRGBA, c16, cFloat), RenderLoadOp::cDontCare, cMainColorTarget},
-    };
-    static RenderBlueprintDescription::Pass const passes[] = {
-        {cMainColorPass},
-    };
-    static RenderBlueprintDescription::Attachment const attachments[] = {
-        {cMainColorPass, cMainColorTarget, RenderAttachmentUsage::cColor},
-    };
-}
-
-const RenderBlueprintDescription Rendering::Blueprint::cDefaultDescription = {DefaultBlueprint::targets, DefaultBlueprint::passes, DefaultBlueprint::attachments};
 
 }

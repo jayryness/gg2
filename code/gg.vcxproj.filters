@@ -13,7 +13,6 @@
     <ClCompile Include="WindowWin.cpp">
       <Filter>Win</Filter>
     </ClCompile>
-    <ClCompile Include="RenderTypes.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Window.h" />

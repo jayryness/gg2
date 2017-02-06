@@ -16,15 +16,6 @@ namespace gg {
 namespace vk {
 
 VkFormat ConvertFormat(RenderFormat const& format);
-inline VkAttachmentLoadOp ConvertLoadOp(RenderLoadOp op) {
-    switch (op) {
-    case gg::RenderLoadOp::cLoad:       return VK_ATTACHMENT_LOAD_OP_LOAD;
-    case gg::RenderLoadOp::cClear:      return VK_ATTACHMENT_LOAD_OP_CLEAR;
-    case gg::RenderLoadOp::cDontCare:   return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    }
-    assert(false);
-    return VK_ATTACHMENT_LOAD_OP_MAX_ENUM;
-}
 
 inline int FindQueueFamily(VkQueueFlags requiredFlags, VkQueueFamilyProperties const props[], unsigned count) {
     // find queue family with all required flags, and fewest irrelevant flags

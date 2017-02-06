@@ -109,7 +109,6 @@
       <FileType>CppCode</FileType>
     </ClInclude>
     <ClCompile Include="Rendering.cpp" />
-    <ClCompile Include="RenderTypes.cpp" />
     <ClCompile Include="VulkanUtil.cpp" />
     <ClCompile Include="WindowWin.cpp" />
   </ItemGroup>

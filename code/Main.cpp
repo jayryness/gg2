@@ -34,10 +34,6 @@ int main(int argc, char* argv[]) {
     gg::Os os;
     GG_SCOPE_EXIT(std::cout << "Bye!\n"; os.Sleep(200));
 
-    std::cout << "Loading pipeline descriptions...";
-    gg::RenderPipelineDescription pipelineDef = gg::RenderPipelineDescription::LoadFromFiles("shaders/Sprite.vertex.spv", "shaders/Sprite.fragment.spv");
-    std::cout << "done\n";
-
     std::stringstream debugPrint;
 
     GG_SCOPE_EXIT(std::cout << "done\n");
@@ -70,12 +66,8 @@ int main(int argc, char* argv[]) {
         gg::Rendering::Image image(&renderingHub, pixels, rgba8888, 8, 8);
         std::cout << "done\n";
 
-        //std::cout << "Creating blueprint...";
-        //gg::Rendering::Blueprint blueprint(&renderingHub, gg::Rendering::Blueprint::cDefaultDescription);
-        //std::cout << "done\n";
-
         std::cout << "Creating pipeline...";
-        gg::Rendering::Pipeline pipeline(&renderingHub, pipelineDef, window.hwnd());
+        gg::Rendering::Pipeline pipeline(&renderingHub, window.hwnd());
         std::cout << "done\n";
 
         gg::Window::ShowConsole(false);
