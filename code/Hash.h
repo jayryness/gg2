@@ -55,7 +55,7 @@ inline uint32_t CombineHash32(uint32_t a, uint32_t b) {
 }
 
 uint32_t BufferHash32(void const* buffer, size_t size, uint32_t seed = 0xdecafbad);
-uint32_t BufferHash32(Span<int8_t const> data, uint32_t seed = 0xdecafbad);
+uint32_t BufferHash32(Span<int8_t const> const& data, uint32_t seed = 0xdecafbad);
 uint32_t StringHash32(char const* str, uint32_t seed = 0xdecafbad);
 
 struct HashedString {
@@ -126,7 +126,7 @@ inline uint32_t StringHash32(char const* data, uint32_t seed) {
     return BufferHash32(data, strlen(data), seed);
 }
 
-inline uint32_t BufferHash32(Span<int8_t const> span, uint32_t seed) {
+inline uint32_t BufferHash32(Span<int8_t const> const& span, uint32_t seed) {
     return BufferHash32(span.begin(), span.count(), seed);
 }
 

@@ -1,6 +1,7 @@
 #define GG_FORCE_INLINE __forceinline
 #define GG_NO_INLINE __declspec(noinline)
 #define GG_ALIGN_16 __declspec(align(16))
+#define GG_ALLOCA(size) _alloca(size)
 
 namespace gg {
 

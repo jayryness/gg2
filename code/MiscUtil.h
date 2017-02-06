@@ -10,6 +10,8 @@
 #define GG_DEBUG
 #endif
 
+#define GG_ITER_LAMBDA(what) ([&](auto& it) {return what;})
+
 #define GG_TOKEN_EVAL_CAT(arg1, arg2) GG_TOKEN_CAT(arg1, arg2)
 #define GG_TOKEN_CAT(arg1, arg2) arg1 ## arg2
 #define GG_SCOPE_EXIT(code) \
@@ -24,6 +26,8 @@
 #error Unsupported platform.
 
 #endif
+
+#define GG_STACK_ARRAY(type, count, ...) gg::ConstructArray<type>(GG_ALLOCA((count)*sizeof(type)), count, __VA_ARGS__)
 
 namespace gg {
 

@@ -16,6 +16,15 @@ namespace gg {
 namespace vk {
 
 VkFormat ConvertFormat(RenderFormat const& format);
+inline VkAttachmentLoadOp ConvertLoadOp(RenderLoadOp op) {
+    switch (op) {
+    case gg::RenderLoadOp::cLoad:       return VK_ATTACHMENT_LOAD_OP_LOAD;
+    case gg::RenderLoadOp::cClear:      return VK_ATTACHMENT_LOAD_OP_CLEAR;
+    case gg::RenderLoadOp::cDontCare:   return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    }
+    assert(false);
+    return VK_ATTACHMENT_LOAD_OP_MAX_ENUM;
+}
 
 inline int FindQueueFamily(VkQueueFlags requiredFlags, VkQueueFamilyProperties const props[], unsigned count) {
     // find queue family with all required flags, and fewest irrelevant flags
@@ -104,6 +113,8 @@ struct DestroyOverloads {
     static void Destroy(VkDevice device, VkDeviceMemory handle, VkAllocationCallbacks const* allocator) { vkFreeMemory(device, handle, allocator); }
     static void Destroy(VkDevice device, VkSwapchainKHR handle, VkAllocationCallbacks const* allocator) { vkDestroySwapchainKHR(device, handle, allocator); }
     static void Destroy(VkInstance instance, VkSurfaceKHR handle, VkAllocationCallbacks const* allocator) { vkDestroySurfaceKHR(instance, handle, allocator); }
+    static void Destroy(VkDevice device, VkRenderPass handle, VkAllocationCallbacks const* allocator) { vkDestroyRenderPass(device, handle, allocator); }
+    static void Destroy(VkDevice device, VkPipeline handle, VkAllocationCallbacks const* allocator) { vkDestroyPipeline(device, handle, allocator); }
 };
 
 template<class T>
@@ -161,6 +172,8 @@ public:
         deviceMemoryFreeFifo_.endPhase();
         swapchainDestructionFifo_.endPhase();
         surfaceDestructionFifo_.endPhase();
+        renderPassDestructionFifo_.endPhase();
+        pipelineDestructionFifo_.endPhase();
         waitSemaphores_.removeAll();
         waitDstStageMasks_.removeAll();
 
@@ -177,6 +190,8 @@ public:
                 imageDestructionFifo_.flushAndBeginPhase(*device_);
                 swapchainDestructionFifo_.flushAndBeginPhase(*device_);
                 surfaceDestructionFifo_.flushAndBeginPhase(*instance_);
+                renderPassDestructionFifo_.flushAndBeginPhase(*device_);
+                pipelineDestructionFifo_.flushAndBeginPhase(*device_);
             } else {
                 VkCommandBufferAllocateInfo allocInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
                 allocInfo.commandPool = commandPool_;
@@ -221,6 +236,16 @@ public:
     void retireSurface(VkSurfaceKHR surface, VkCommandBuffer commandBuffer) {
         assert(commandBuffer == currentCommandBuffer_);
         surfaceDestructionFifo_.add(surface);
+    }
+
+    void retireRenderPass(VkRenderPass renderPass, VkCommandBuffer commandBuffer) {
+        assert(commandBuffer == currentCommandBuffer_);
+        renderPassDestructionFifo_.add(renderPass);
+    }
+
+    void retirePipeline(VkPipeline pipeline, VkCommandBuffer commandBuffer) {
+        assert(commandBuffer == currentCommandBuffer_);
+        pipelineDestructionFifo_.add(pipeline);
     }
 
     void flushAllSwapchains(VkDevice device) {
@@ -280,6 +305,8 @@ public:
         deviceMemoryFreeFifo_.flushAll(*device_);
         swapchainDestructionFifo_.flushAll(*device_);
         surfaceDestructionFifo_.flushAll(*instance_);
+        renderPassDestructionFifo_.flushAll(*device_);
+        pipelineDestructionFifo_.flushAll(*device_);
         vkDestroyCommandPool(*device_, commandPool_, nullptr);
     }
 
@@ -294,6 +321,8 @@ private:
     DeferredDestructionFifo<VkDeviceMemory> deviceMemoryFreeFifo_;
     DeferredDestructionFifo<VkSwapchainKHR> swapchainDestructionFifo_;
     DeferredDestructionFifo<VkSurfaceKHR> surfaceDestructionFifo_;
+    DeferredDestructionFifo<VkRenderPass> renderPassDestructionFifo_;
+    DeferredDestructionFifo<VkPipeline> pipelineDestructionFifo_;
     VkFence nextFence_ = {};
     Ring<VkCommandBuffer> commandBuffers_;
     Ring<VkFence> fences_;

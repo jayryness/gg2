@@ -40,6 +40,15 @@
     <ClInclude Include="Shaders.hxx">
       <Filter>Shaders</Filter>
     </ClInclude>
+    <ClInclude Include="Present.hlsl">
+      <Filter>Shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="Present.fragment.num">
+      <Filter>Shaders\Compiled</Filter>
+    </ClInclude>
+    <ClInclude Include="Present.vertex.num">
+      <Filter>Shaders\Compiled</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="Win">
@@ -51,10 +60,19 @@
     <Filter Include="Shaders">
       <UniqueIdentifier>{9c72e1b0-2e32-481a-9df6-1957bba1d472}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Shaders\Compiled">
+      <UniqueIdentifier>{2ca256d8-bfa6-4fff-83bd-bbac19a3a48f}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <None Include="MiscUtilWin.inl">
       <Filter>Win</Filter>
+    </None>
+    <None Include="Sprite.fragment.num">
+      <Filter>Shaders\Compiled</Filter>
+    </None>
+    <None Include="Sprite.vertex.num">
+      <Filter>Shaders\Compiled</Filter>
     </None>
   </ItemGroup>
 </Project>

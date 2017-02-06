@@ -2,6 +2,9 @@
 #ifndef GG_RENDERTYPES_H
 #define GG_RENDERTYPES_H
 
+#define GG_RENDERFORMAT(layout, bitDepth, type) \
+    RenderFormat{gg::RenderFormat::Layout::layout, gg::RenderFormat::BitDepth::bitDepth, gg::RenderFormat::Type::type}
+
 #include "Array.h"
 
 namespace gg {
@@ -59,12 +62,59 @@ struct RenderFormat {
         cEnumCount
     };
 
+    bool isDepth() const {
+        return (layout == Layout::cD) | (layout == Layout::cDS);
+    }
+
     Layout layout;
     BitDepth bitDepth;
     Type type;
 };
 
+struct RenderBlueprintDescriptionData {
+};
+
+enum class RenderLoadOp : unsigned {
+    cLoad,
+    cClear,
+    cDontCare
+};
+
+enum class RenderAttachmentUsage : unsigned {
+    cInput,
+    cColor,
+    cDepth
+};
+
 struct RenderBlueprintDescription {
+    using TargetId = unsigned;
+    using PassId = unsigned;
+
+    struct Target {
+        RenderFormat format;
+        RenderLoadOp loadOp;
+        TargetId id;
+    };
+
+    struct Pass {
+        PassId id;
+    };
+
+    struct Attachment {
+        PassId passId;
+        TargetId targetId;
+        RenderAttachmentUsage usage;
+    };
+
+    struct Dependency {
+        PassId src;
+        PassId dst;
+    };
+
+    Span<Target const> targets;
+    Span<Pass const> passes;
+    Span<Attachment const> attachments;
+    Span<Dependency const> dependencies;
 };
 
 struct RenderPipelineDescriptionData {
@@ -82,13 +132,10 @@ struct RenderPipelineDescription {
 
     Stage vertexStage;
     Stage fragmentStage;
-    uint32_t hash;
-    RenderPipelineDescriptionData retainedData;
+    RenderPipelineDescriptionData heldData;
 };
 
-inline uint32_t Hash32(RenderPipelineDescription const& pipelineDef) {
-    return pipelineDef.hash;
-}
+uint32_t Hash32(RenderPipelineDescription const& pipelineDescription);
 
 }
 

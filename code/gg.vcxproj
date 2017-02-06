@@ -102,6 +102,12 @@
     <ClCompile Include="Allocator.cpp" />
     <ClCompile Include="Main.cpp" />
     <ClCompile Include="OsWin.cpp" />
+    <ClInclude Include="Present.fragment.num">
+      <FileType>CppCode</FileType>
+    </ClInclude>
+    <ClInclude Include="Present.vertex.num">
+      <FileType>CppCode</FileType>
+    </ClInclude>
     <ClCompile Include="Rendering.cpp" />
     <ClCompile Include="RenderTypes.cpp" />
     <ClCompile Include="VulkanUtil.cpp" />
@@ -128,9 +134,16 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="MiscUtilWin.inl" />
+    <None Include="Sprite.fragment.num" />
+    <None Include="Sprite.vertex.num" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Sprite.hlsl">
+      <FileType>Document</FileType>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Present.hlsl">
       <FileType>Document</FileType>
     </ClInclude>
   </ItemGroup>

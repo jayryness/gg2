@@ -70,6 +70,10 @@ int main(int argc, char* argv[]) {
         gg::Rendering::Image image(&renderingHub, pixels, rgba8888, 8, 8);
         std::cout << "done\n";
 
+        //std::cout << "Creating blueprint...";
+        //gg::Rendering::Blueprint blueprint(&renderingHub, gg::Rendering::Blueprint::cDefaultDescription);
+        //std::cout << "done\n";
+
         std::cout << "Creating pipeline...";
         gg::Rendering::Pipeline pipeline(&renderingHub, pipelineDef, window.hwnd());
         std::cout << "done\n";

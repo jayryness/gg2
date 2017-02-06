@@ -142,6 +142,8 @@ protected:
 
 struct Rendering::Blueprint : Rendering::IdOwner<BlueprintId, &Hub::destroyBlueprint>
 {
+    static RenderBlueprintDescription const cDefaultDescription;
+
     Blueprint(Hub* hub, RenderBlueprintDescription const& description)
         : IdOwner(hub, hub->createBlueprint(description)) {
     }

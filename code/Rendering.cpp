@@ -9,6 +9,19 @@
 
 namespace gg {
 
+static uint32_t const cSpriteVertexBytecode[] = {
+    #include "Sprite.vertex.num"
+};
+static uint32_t const cSpriteFragmentBytecode[] = {
+    #include "Sprite.fragment.num"
+};
+static uint32_t const cPresentVertexBytecode[] = {
+    #include "Present.vertex.num"
+};
+static uint32_t const cPresentFragmentBytecode[] = {
+    #include "Present.fragment.num"
+};
+
 void Rendering::addImage(float x, float y, Image const& image) {
     imagePrims_.addLast({x, y, image});
 }
@@ -117,6 +130,7 @@ struct Rendering::Hub::Platform {
         deviceCreateInfo.ppEnabledExtensionNames = deviceExtensions;
 
         VkPhysicalDeviceFeatures features = {};
+        features.shaderStorageImageExtendedFormats = VK_TRUE;
         features.shaderClipDistance = VK_TRUE;
         deviceCreateInfo.pEnabledFeatures = &features;
 
@@ -149,8 +163,184 @@ struct Rendering::Hub::Platform {
         if (errorMsg && *errorMsg) {
             return;
         }
+        {
+            VkSemaphoreCreateInfo createInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+            vkCreateSemaphore(device, &createInfo, nullptr, &renderingFinishedSemaphore);
+            vkCreateSemaphore(device, &createInfo, nullptr, &transfersFinishedSemaphore);
+        }
+        // samplers
+        {
+            VkSamplerCreateInfo createInfo = {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+            createInfo.magFilter = VK_FILTER_LINEAR;
+            createInfo.minFilter = VK_FILTER_LINEAR;
+            createInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+            createInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+            createInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+            createInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+            VkResult result = vkCreateSampler(device, &createInfo, nullptr, &linearBlackBorderSampler);
+            assert(result == VK_SUCCESS);
+        }
+        // sprite shaders
+        {
+            VkShaderModuleCreateInfo createInfo = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+            createInfo.codeSize = sizeof(cSpriteVertexBytecode);
+            createInfo.pCode = cSpriteVertexBytecode;
+            VkResult result = vkCreateShaderModule(device, &createInfo, nullptr, &spriteVertexShader);
+            assert(result == VK_SUCCESS);
+            createInfo.codeSize = sizeof(cSpriteFragmentBytecode);
+            createInfo.pCode = cSpriteFragmentBytecode;
+            result = vkCreateShaderModule(device, &createInfo, nullptr, &spriteFragmentShader);
+            assert(result == VK_SUCCESS);
+        }
+        // present shaders
+        {
+            VkShaderModuleCreateInfo createInfo = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+            createInfo.codeSize = sizeof(cPresentVertexBytecode);
+            createInfo.pCode = cPresentVertexBytecode;
+            VkResult result = vkCreateShaderModule(device, &createInfo, nullptr, &presentVertexShader);
+            assert(result == VK_SUCCESS);
+            createInfo.codeSize = sizeof(cPresentFragmentBytecode);
+            createInfo.pCode = cPresentFragmentBytecode;
+            result = vkCreateShaderModule(device, &createInfo, nullptr, &presentFragmentShader);
+            assert(result == VK_SUCCESS);
+        }
+        // sprite descriptor set
+        {
+            //layout (binding = 0) sampler linearSampler;
+            //layout (binding = 1) Buffer<float4> clut;
+            //layout (binding = 2) Texture2D<uint> texels;
+            //layout (binding = 3) Buffer<float2> positions;
+            VkDescriptorSetLayoutBinding bindings[] = {
+                {0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, &linearBlackBorderSampler},
+                {1, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
+                {2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
+                {3, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT},
+            };
+            VkDescriptorSetLayoutCreateInfo createInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+            createInfo.bindingCount = gg::CountOf(bindings);
+            createInfo.pBindings = bindings;
+            VkResult result = vkCreateDescriptorSetLayout(device, &createInfo, nullptr, &spriteDescriptorSetLayout);
+            assert(result == VK_SUCCESS);
+        }
+        // present descriptor set
+        {
+            //layout (binding = 0) sampler linearSampler;
+            //layout (binding = 1) Texture2D<uint> source;
+            VkDescriptorSetLayoutBinding bindings[] = {
+                {0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, &linearBlackBorderSampler},
+                {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
+            };
+            VkDescriptorSetLayoutCreateInfo createInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+            createInfo.bindingCount = gg::CountOf(bindings);
+            createInfo.pBindings = bindings;
+            VkResult result = vkCreateDescriptorSetLayout(device, &createInfo, nullptr, &presentDescriptorSetLayout);
+            assert(result == VK_SUCCESS);
+        }
+        // sprite pipeline layout
+        {
+            VkPipelineLayoutCreateInfo createInfo = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+            createInfo.setLayoutCount = 1;
+            createInfo.pSetLayouts = &spriteDescriptorSetLayout;
+            VkResult result = vkCreatePipelineLayout(device, &createInfo, nullptr, &spritePipelineLayout);
+            assert(result == VK_SUCCESS);
+        }
+        // present pipeline layout
+        {
+            VkPipelineLayoutCreateInfo createInfo = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+            createInfo.setLayoutCount = 1;
+            createInfo.pSetLayouts = &presentDescriptorSetLayout;
+            VkResult result = vkCreatePipelineLayout(device, &createInfo, nullptr, &presentPipelineLayout);
+            assert(result == VK_SUCCESS);
+        }
+        // sprite render pass
+        {
+            VkAttachmentDescription attachment = {};
+            attachment.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+            attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+            attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            attachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            attachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+            VkAttachmentReference attachmentRef = {};
+            attachmentRef.attachment = 0;
+            attachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+            VkSubpassDescription subpass = {};
+            subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+            subpass.colorAttachmentCount = 1;
+            subpass.pColorAttachments = &attachmentRef;
+
+            VkRenderPassCreateInfo createInfo = {VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+            createInfo.attachmentCount = 1;
+            createInfo.pAttachments = &attachment;
+            createInfo.subpassCount = 1;
+            createInfo.pSubpasses = &subpass;
+            //createInfo.dependencyCount = blueprint.dependencies.count();
+            //createInfo.pDependencies = dependencies;
+
+            VkResult result = vkCreateRenderPass(device, &createInfo, nullptr, &spriteRenderPass);
+            assert(result == VK_SUCCESS);
+        }
+        // sprite pipeline
+        {
+            VkPipelineShaderStageCreateInfo stages[] = {{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}, {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}};
+            stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+            stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+            stages[0].module = spriteVertexShader;
+            stages[1].module = spriteFragmentShader;
+            stages[0].pName = "main";
+            stages[1].pName = "main";
+            VkVertexInputBindingDescription vertexBindings[] = {
+                {0, 4, VK_VERTEX_INPUT_RATE_INSTANCE},
+            };
+            VkVertexInputAttributeDescription vertexAttributes[] = {
+                {0, 0, VK_FORMAT_R32_UINT, 0},
+            };
+            VkPipelineVertexInputStateCreateInfo vertexInput = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+            vertexInput.vertexBindingDescriptionCount = gg::CountOf(vertexBindings);
+            vertexInput.pVertexBindingDescriptions = vertexBindings;
+            vertexInput.vertexAttributeDescriptionCount = gg::CountOf(vertexAttributes);
+            vertexInput.pVertexAttributeDescriptions = vertexAttributes;
+            VkPipelineInputAssemblyStateCreateInfo inputAssembly = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+            inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+            VkPipelineRasterizationStateCreateInfo rasterization = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+            rasterization.rasterizerDiscardEnable = VK_TRUE;
+            rasterization.lineWidth = 1.f;
+            VkPipelineColorBlendAttachmentState attachments[] = {
+                {VK_TRUE, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_OP_ADD, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_OP_ADD, 0xf},
+            };
+            VkPipelineColorBlendStateCreateInfo colorBlend = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+            colorBlend.attachmentCount = gg::CountOf(attachments);
+            colorBlend.pAttachments = attachments;
+            VkGraphicsPipelineCreateInfo createInfo = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+            createInfo.flags = 0;
+            createInfo.stageCount = gg::CountOf(stages);
+            createInfo.pStages = stages;
+            createInfo.pVertexInputState = &vertexInput;
+            createInfo.pInputAssemblyState = &inputAssembly;
+            createInfo.pRasterizationState = &rasterization;
+            createInfo.pColorBlendState = &colorBlend;
+            createInfo.layout = spritePipelineLayout;
+            createInfo.renderPass = spriteRenderPass;
+            VkResult result = vkCreateGraphicsPipelines(device, nullptr, 1, &createInfo, nullptr, &spritePipeline);
+            assert(result == VK_SUCCESS);
+        }
     }
     ~Platform() {
+        vkDestroyPipeline(device, spritePipeline, nullptr);
+        vkDestroyRenderPass(device, spriteRenderPass, nullptr);
+        vkDestroyPipelineLayout(device, presentPipelineLayout, nullptr);
+        vkDestroyPipelineLayout(device, spritePipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(device, presentDescriptorSetLayout, nullptr);
+        vkDestroyDescriptorSetLayout(device, spriteDescriptorSetLayout, nullptr);
+        vkDestroyShaderModule(device, presentFragmentShader, nullptr);
+        vkDestroyShaderModule(device, spriteFragmentShader, nullptr);
+        vkDestroyShaderModule(device, presentVertexShader, nullptr);
+        vkDestroyShaderModule(device, spriteVertexShader, nullptr);
+        vkDestroySampler(device, linearBlackBorderSampler, nullptr);
         vkDestroySemaphore(device, transfersFinishedSemaphore, nullptr);
         vkDestroySemaphore(device, renderingFinishedSemaphore, nullptr);
         if (presentImageAcquiredFence) {
@@ -174,12 +364,25 @@ struct Rendering::Hub::Platform {
     VkFence presentImageAcquiredFence = {};
     VkSemaphore renderingFinishedSemaphore = {};
     VkSemaphore transfersFinishedSemaphore = {};
+    VkSampler linearBlackBorderSampler = {};
+    VkShaderModule spriteVertexShader = {};
+    VkShaderModule presentVertexShader = {};
+    VkShaderModule spriteFragmentShader = {};
+    VkShaderModule presentFragmentShader = {};
+    VkDescriptorSetLayout spriteDescriptorSetLayout = {};
+    VkDescriptorSetLayout presentDescriptorSetLayout = {};
+    VkPipelineLayout spritePipelineLayout = {};
+    VkPipelineLayout presentPipelineLayout = {};
+    VkRenderPass spriteRenderPass = {};
+    VkPipeline spritePipeline = {};
 
     struct StagingBuffer;
 };
 
 struct Rendering::Hub::PresentationSurface {
     VkSurfaceKHR surface;
+    VkRenderPass presentRenderPass;
+    VkPipeline presentPipeline;
     VkSwapchainKHR swapchain;
     VkImage swapchainImages[2];     // (owned by swapchain, do not destroy)
     VkSurfaceFormatKHR surfaceFormat;
@@ -326,13 +529,101 @@ Rendering::Hub::~Hub() {
         if (presentationSurface.swapchain) {
             platform_->graphicsChannel.retireSwapchain(presentationSurface.swapchain, graphicsCommandBuffer);
         }
+        platform_->graphicsChannel.retirePipeline(presentationSurface.presentPipeline, graphicsCommandBuffer);
+        platform_->graphicsChannel.retireRenderPass(presentationSurface.presentRenderPass, graphicsCommandBuffer);
         platform_->graphicsChannel.retireSurface(presentationSurface.surface, graphicsCommandBuffer);
     }
 }
 
 Rendering::BlueprintId Rendering::Hub::createBlueprint(RenderBlueprintDescription const& blueprint) {
     Platform& platform = *platform_;
-    return{};
+
+    auto subpassDescriptions = GG_STACK_ARRAY(VkSubpassDescription, blueprint.passes.count());
+    auto attachmentDescriptions = GG_STACK_ARRAY(VkAttachmentDescription, blueprint.targets.count());
+    unsigned const inputAttachmentReferencesCount = gg::CountOver(blueprint.attachments, GG_ITER_LAMBDA(it.usage == RenderAttachmentUsage::cInput));
+    unsigned const colorAttachmentReferencesCount = gg::CountOver(blueprint.attachments, GG_ITER_LAMBDA(it.usage == RenderAttachmentUsage::cColor));
+    unsigned const depthAttachmentReferencesCount = gg::CountOver(blueprint.attachments, GG_ITER_LAMBDA(it.usage == RenderAttachmentUsage::cDepth));
+    auto inputAttachmentReferences = GG_STACK_ARRAY(VkAttachmentReference, inputAttachmentReferencesCount);
+    auto colorAttachmentReferences = GG_STACK_ARRAY(VkAttachmentReference, colorAttachmentReferencesCount);
+    auto depthAttachmentReferences = GG_STACK_ARRAY(VkAttachmentReference, depthAttachmentReferencesCount);
+    auto dependencies = GG_STACK_ARRAY(VkSubpassDependency, blueprint.dependencies.count());
+
+    for (unsigned attachment = 0; attachment < blueprint.targets.count(); attachment++) {
+        VkAttachmentDescription& desc = attachmentDescriptions[attachment];
+        RenderBlueprintDescription::Target const& target = blueprint.targets[attachment];
+        desc.flags = 0;
+        desc.format = gg::vk::ConvertFormat(blueprint.targets[attachment].format);
+        desc.samples = VK_SAMPLE_COUNT_1_BIT;
+        desc.loadOp = gg::vk::ConvertLoadOp(target.loadOp);
+        desc.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        desc.stencilLoadOp = desc.loadOp;
+        desc.stencilStoreOp = desc.stencilStoreOp;
+        desc.initialLayout = target.format.isDepth() ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        desc.finalLayout = desc.initialLayout;
+    }
+
+    for (unsigned subpass = 0; subpass < blueprint.passes.count(); subpass++) {
+        VkSubpassDescription& desc = subpassDescriptions[subpass];
+        RenderBlueprintDescription::Pass const& pass = blueprint.passes[subpass];
+
+        desc.flags = 0;
+        desc.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        desc.inputAttachmentCount = gg::CountOver(blueprint.attachments, GG_ITER_LAMBDA(it.passId == pass.id && it.usage == RenderAttachmentUsage::cInput));
+        desc.pInputAttachments = inputAttachmentReferences;
+        desc.colorAttachmentCount = gg::CountOver(blueprint.attachments, GG_ITER_LAMBDA(it.passId == pass.id && it.usage == RenderAttachmentUsage::cColor));
+        desc.pColorAttachments = colorAttachmentReferences;
+        unsigned depthAttachmentCount = gg::CountOver(blueprint.attachments, GG_ITER_LAMBDA(it.passId == pass.id && it.usage == RenderAttachmentUsage::cDepth));;
+        desc.pDepthStencilAttachment = depthAttachmentCount ? depthAttachmentReferences : nullptr;
+        assert(depthAttachmentCount <= 1);
+        desc.preserveAttachmentCount = 0;
+        desc.pPreserveAttachments = nullptr;
+
+        for (RenderBlueprintDescription::Attachment const& attachment : blueprint.attachments) {
+            if (attachment.passId != pass.id) continue;
+
+            unsigned found = gg::FindIndex(blueprint.targets, GG_ITER_LAMBDA(it.id == attachment.targetId));
+            assert(found != gg::cIndexNotFound);
+
+            switch(attachment.usage) {
+            case RenderAttachmentUsage::cInput:
+                *inputAttachmentReferences++ = {found, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+                break;
+            case RenderAttachmentUsage::cColor:
+                *colorAttachmentReferences++ = {found, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+                break;
+            case RenderAttachmentUsage::cDepth:
+                *depthAttachmentReferences++ = {found, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+                break;
+            }
+        }
+    }
+
+    for (unsigned dependency = 0; dependency < blueprint.dependencies.count(); dependency++) {
+        unsigned foundSrc = gg::FindIndex(blueprint.passes, GG_ITER_LAMBDA(it.id == blueprint.dependencies[dependency].src));
+        unsigned foundDst = gg::FindIndex(blueprint.passes, GG_ITER_LAMBDA(it.id == blueprint.dependencies[dependency].dst));
+        assert(foundSrc != gg::cIndexNotFound && foundDst != gg::cIndexNotFound);
+        dependencies[dependency] = {
+            foundSrc, foundDst,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 
+            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
+            0
+        };
+    }
+
+    VkRenderPassCreateInfo createInfo = {VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+    createInfo.attachmentCount = blueprint.targets.count();
+    createInfo.pAttachments = attachmentDescriptions;
+    createInfo.subpassCount = blueprint.passes.count();
+    createInfo.pSubpasses = subpassDescriptions;
+    createInfo.dependencyCount = blueprint.dependencies.count();
+    createInfo.pDependencies = dependencies;
+
+    VkRenderPass renderPass = {};
+    VkResult result = vkCreateRenderPass(platform.device, &createInfo, nullptr, &renderPass);
+    assert(result == VK_SUCCESS);
+    return blueprintResources_.add({});
 }
 
 Rendering::FramebufferId Rendering::Hub::createFramebuffer(BlueprintId const& blueprintId, unsigned width, unsigned height, WindowHandle displayWindowOrNull) {
@@ -394,11 +685,6 @@ Rendering::PipelineId Rendering::Hub::createPipeline(RenderPipelineDescription c
                 vkCreateFence(platform.device, &createInfo, nullptr, &platform.presentImageAcquiredFence);
             }
         }
-        {
-            VkSemaphoreCreateInfo createInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-            vkCreateSemaphore(platform.device, &createInfo, nullptr, &platform.renderingFinishedSemaphore);
-            vkCreateSemaphore(platform.device, &createInfo, nullptr, &platform.transfersFinishedSemaphore);
-        }
 
         VkSurfaceCapabilitiesKHR surfaceCapabilities;
         vkGetPhysicalDeviceSurfaceCapabilitiesKHR(platform.physical.device, surface, &surfaceCapabilities);
@@ -423,11 +709,78 @@ Rendering::PipelineId Rendering::Hub::createPipeline(RenderPipelineDescription c
         }
         assert(found < formatCount);
 
+        VkRenderPass presentRenderPass = {};
+        {
+            VkAttachmentDescription attachment = {};
+            attachment.format = formats[found].format;
+            attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+            attachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            attachment.initialLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+            attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+            VkAttachmentReference attachmentRef = {};
+            attachmentRef.attachment = 0;
+            attachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+            VkSubpassDescription subpass = {};
+            subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+            subpass.colorAttachmentCount = 1;
+            subpass.pColorAttachments = &attachmentRef;
+
+            VkRenderPassCreateInfo createInfo = {VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+            createInfo.attachmentCount = 1;
+            createInfo.pAttachments = &attachment;
+            createInfo.subpassCount = 1;
+            createInfo.pSubpasses = &subpass;
+            //createInfo.dependencyCount = blueprint.dependencies.count();
+            //createInfo.pDependencies = dependencies;
+
+            VkResult result = vkCreateRenderPass(platform.device, &createInfo, nullptr, &presentRenderPass);
+            assert(result == VK_SUCCESS);
+        }
+        VkPipeline presentPipeline = {};
+        {
+            VkPipelineShaderStageCreateInfo stages[] = {{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}, {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}};
+            stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+            stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+            stages[0].module = platform.presentVertexShader;
+            stages[1].module = platform.presentFragmentShader;
+            stages[0].pName = "main";
+            stages[1].pName = "main";
+            VkPipelineVertexInputStateCreateInfo vertexInput = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+            VkPipelineInputAssemblyStateCreateInfo inputAssembly = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+            inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+            VkPipelineRasterizationStateCreateInfo rasterization = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+            rasterization.rasterizerDiscardEnable = VK_TRUE;
+            rasterization.lineWidth = 1.f;
+            VkPipelineColorBlendAttachmentState attachments[] = {
+                {VK_FALSE, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD, 0xf},
+            };
+            VkPipelineColorBlendStateCreateInfo colorBlend = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+            colorBlend.attachmentCount = gg::CountOf(attachments);
+            colorBlend.pAttachments = attachments;
+            VkGraphicsPipelineCreateInfo createInfo = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+            createInfo.flags = 0;
+            createInfo.stageCount = gg::CountOf(stages);
+            createInfo.pStages = stages;
+            createInfo.pVertexInputState = &vertexInput;
+            createInfo.pInputAssemblyState = &inputAssembly;
+            createInfo.pRasterizationState = &rasterization;
+            createInfo.pColorBlendState = &colorBlend;
+            createInfo.layout = platform.presentPipelineLayout;
+            createInfo.renderPass = presentRenderPass;
+            VkResult result = vkCreateGraphicsPipelines(device, nullptr, 1, &createInfo, nullptr, &presentPipeline);
+            assert(result == VK_SUCCESS);
+        }
+
         VkPresentModeKHR presentModes[VK_PRESENT_MODE_RANGE_SIZE_KHR];
         uint32_t presentModeCount = gg::CountOf(presentModes);
         vkGetPhysicalDeviceSurfacePresentModesKHR(platform.physical.device, surface, &presentModeCount, presentModes);
 
-        presentationSurfaces_.add(std::move(displayWindow), {surface, {}, {{}, {}}, formats[found], {}});
+        presentationSurfaces_.add(std::move(displayWindow), {surface, presentRenderPass, presentPipeline, {}, {{}, {}}, formats[found], {}});
         maintainPresentationSurface(displayWindow);
     }
 
@@ -650,6 +1003,10 @@ Rendering::TilesetId Rendering::Hub::createTileset(Span<uint8_t> const& data, Re
     return tilesetResources_.add(std::move(tilesetResource));
 }
 
+void Rendering::Hub::destroyBlueprint(BlueprintId id) {
+    blueprintResources_.remove(id);
+}
+
 void Rendering::Hub::destroyPipeline(PipelineId id) {
     pipelineResources_.remove(id);
 }
@@ -765,5 +1122,22 @@ void Rendering::Hub::submitRendering(Rendering&& rendering) {
 
     renderingFreeList_.addLast(std::move(rendering.reset()));
 }
+
+namespace DefaultBlueprint {
+    enum { cMainColorTarget };
+    enum { cMainColorPass };
+
+    static RenderBlueprintDescription::Target const targets[] = {
+        {GG_RENDERFORMAT(cRGBA, c16, cFloat), RenderLoadOp::cDontCare, cMainColorTarget},
+    };
+    static RenderBlueprintDescription::Pass const passes[] = {
+        {cMainColorPass},
+    };
+    static RenderBlueprintDescription::Attachment const attachments[] = {
+        {cMainColorPass, cMainColorTarget, RenderAttachmentUsage::cColor},
+    };
+}
+
+const RenderBlueprintDescription Rendering::Blueprint::cDefaultDescription = {DefaultBlueprint::targets, DefaultBlueprint::passes, DefaultBlueprint::attachments};
 
 }

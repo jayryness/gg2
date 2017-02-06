@@ -16,17 +16,18 @@ inline Array<int8_t> LoadEntireFile(char const* filename) {
     return data;
 }
 
+uint32_t Hash32(RenderPipelineDescription const& pipelineDescription) {
+    uint32_t result = BufferHash32(pipelineDescription.vertexStage.shaderBytecode);
+    result = CombineHash32(result, BufferHash32(pipelineDescription.fragmentStage.shaderBytecode));
+    return result;
+}
+
 RenderPipelineDescription RenderPipelineDescription::MakeFromData(RenderPipelineDescriptionData&& data) {
     RenderPipelineDescription result = {
         {data.vertexBytecode},
         {data.fragmentBytecode},
-        CombineHash32(
-            BufferHash32(data.vertexBytecode),
-            BufferHash32(data.fragmentBytecode)),
         std::move(data)
     };
-    result.hash = BufferHash32(result.vertexStage.shaderBytecode.begin(), result.vertexStage.shaderBytecode.count());
-    result.hash = CombineHash32(result.hash, BufferHash32(result.fragmentStage.shaderBytecode.begin(), result.fragmentStage.shaderBytecode.count()));
     return result;
 }
 
