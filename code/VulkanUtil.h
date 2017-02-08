@@ -78,26 +78,6 @@ struct MovableHandle {
     T handle;
 };
 
-template<class T, void VKAPI_CALL T_DestroyFunc(T handle, VkAllocationCallbacks const* allocator)>
-struct Destructomatic {
-    Destructomatic() = default;
-    Destructomatic(T handle)
-        : handle(handle) {
-    }
-    ~Destructomatic() {
-        if (handle) {
-            T_DestroyFunc(handle, nullptr);
-        }
-    }
-    operator T() const {
-        return handle;
-    }
-    T* operator&() {
-        return &handle;
-    }
-    T handle = {};
-};
-
 struct DestroyOverloads {
     static void Destroy(VkDevice device, VkBuffer handle, VkAllocationCallbacks const* allocator) { vkDestroyBuffer(device, handle, allocator); }
     static void Destroy(VkDevice device, VkImage handle, VkAllocationCallbacks const* allocator) { vkDestroyImage(device, handle, allocator); }
@@ -108,217 +88,146 @@ struct DestroyOverloads {
     static void Destroy(VkDevice device, VkPipeline handle, VkAllocationCallbacks const* allocator) { vkDestroyPipeline(device, handle, allocator); }
 };
 
-template<class T>
-struct DeferredDestructionFifo {
-    template<class T_Destroyer>
-    void flushAndBeginPhase(T_Destroyer destroyer) {
-        retiring = pendingDestroy.removeFirst();
-        for (T handle : retiring) {
-            DestroyOverloads::Destroy(destroyer, handle, nullptr);
+class QueueTracker {
+public:
+    using FenceValue = int;
+    FenceValue unsubmittedFenceValue() const {
+        return unsubmittedFenceValue_;
+    }
+    FenceValue signalledFenceValue() const {
+        return signalledFenceValue_;
+    }
+    bool fenceValueIsSignalled(FenceValue fenceValue) const {
+        return signalledFenceValue_ - fenceValue >= 0;  // (using difference to exploit wrapping)
+    }
+    VkFence doSubmission(VkDevice device, VkQueue queue, VkSubmitInfo const& submitInfo) {
+        VkFence submittingFence;
+        if (submittedFences_.count() && vkGetFenceStatus(device, submittedFences_[0]) == VK_SUCCESS) {
+            assert(signalledFenceValue_ + 1 == unsubmittedFenceValue_ - submittedFences_.count());
+            signalledFenceValue_++;
+            submittingFence = submittedFences_.removeFirst();
+            vkResetFences(device, 1, &submittingFence);
+        } else {
+            VkFenceCreateInfo createInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+            VkResult result = vkCreateFence(device, &createInfo, nullptr, &submittingFence);
+            assert(result == VK_SUCCESS);
         }
-        retiring.removeAll();
+        VkResult result = vkQueueSubmit(queue, 1, &submitInfo, submittingFence);
+        assert(result == VK_SUCCESS);
+        submittedFences_.addLast(submittingFence);
+        unsubmittedFenceValue_++;
+        return submittingFence;
     }
-    void add(T handle) {
-        retiring.addLast(handle);
-    }
-    void endPhase() {
-        pendingDestroy.addLast(std::move(retiring));
-    }
-    template<class T_Destroyer>
-    void flushAll(T_Destroyer destroyer) {
-        for (Array<T>& handles : pendingDestroy) {
-            for (T handle : handles) {
-                DestroyOverloads::Destroy(destroyer, handle, nullptr);
+    void waitForAll(VkDevice device) {
+        if (submittedFences_.count()) {
+            auto fences = GG_STACK_ARRAY(VkFence, submittedFences_.count());
+            submittedFences_.linearizeCopy(fences);
+            vkWaitForFences(device, submittedFences_.count(), fences, true, ~0);
+            signalledFenceValue_ += submittedFences_.count();
+            for (VkFence fence : submittedFences_) {
+                vkDestroyFence(device, fence, nullptr);
             }
-            handles.removeAll();
+            submittedFences_.removeAll();
         }
     }
-    Array<T> retiring;
-    Ring<Array<T>> pendingDestroy;
+    ~QueueTracker() {
+        assert(submittedFences_.count() == 0);
+    }
+
+private:
+    FenceValue unsubmittedFenceValue_ = 0;
+    FenceValue signalledFenceValue_ = -1;
+    Ring<VkFence> submittedFences_;
 };
 
-class Channel {
+class CommandBufferDispenser {
 public:
-    bool flush(Span<VkSemaphore const> signalSemaphores = {}) {
-        if (currentCommandBuffer_ == nullptr) {
-            return false;
-        }
-        vkEndCommandBuffer(currentCommandBuffer_);
-        assert(waitDstStageMasks_.count() == waitSemaphores_.count());
-        VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
-        submitInfo.waitSemaphoreCount = waitSemaphores_.count();
-        submitInfo.pWaitSemaphores = waitSemaphores_.begin();
-        submitInfo.pWaitDstStageMask = waitDstStageMasks_.begin();
-        submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &currentCommandBuffer_;
-        submitInfo.signalSemaphoreCount = signalSemaphores.count();
-        submitInfo.pSignalSemaphores = signalSemaphores.begin();
-        VkResult result = vkQueueSubmit(*queue_, 1, &submitInfo, nextFence_);
+    CommandBufferDispenser(VkDevice device, unsigned queueFamilyIndex) {
+        VkCommandPoolCreateInfo createInfo = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        createInfo.queueFamilyIndex = queueFamilyIndex;
+        createInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        VkResult result = vkCreateCommandPool(device, &createInfo, nullptr, &commandPool_);
         assert(result == VK_SUCCESS);
-
-        commandBuffers_.addLast(std::exchange(currentCommandBuffer_, nullptr));
-        fences_.addLast(std::exchange(nextFence_, nullptr));
-        bufferDestructionFifo_.endPhase();
-        imageDestructionFifo_.endPhase();
-        deviceMemoryFreeFifo_.endPhase();
-        swapchainDestructionFifo_.endPhase();
-        surfaceDestructionFifo_.endPhase();
-        renderPassDestructionFifo_.endPhase();
-        pipelineDestructionFifo_.endPhase();
-        waitSemaphores_.removeAll();
-        waitDstStageMasks_.removeAll();
-
-        return true;
     }
-    VkCommandBuffer beginOrGetCurrentCommandBuffer() {
-        if (currentCommandBuffer_ == nullptr) {
-            if (fences_.count() && vkGetFenceStatus(*device_, fences_[0]) == VK_SUCCESS) {
-                nextFence_ = fences_.removeFirst();
-                vkResetFences(*device_, 1, &nextFence_);
-                currentCommandBuffer_ = commandBuffers_.removeFirst();
-                vkResetCommandBuffer(currentCommandBuffer_, 0);
-                bufferDestructionFifo_.flushAndBeginPhase(*device_);
-                imageDestructionFifo_.flushAndBeginPhase(*device_);
-                swapchainDestructionFifo_.flushAndBeginPhase(*device_);
-                surfaceDestructionFifo_.flushAndBeginPhase(*instance_);
-                renderPassDestructionFifo_.flushAndBeginPhase(*device_);
-                pipelineDestructionFifo_.flushAndBeginPhase(*device_);
+    ~CommandBufferDispenser() {
+        assert(current_ == VK_NULL_HANDLE && recycling_.count() == 0);
+    }
+    void teardown(VkDevice device) {
+        assert(current_ == VK_NULL_HANDLE);
+        if (recycling_.count() == 0) {
+            return;
+        }
+        auto* commandBuffers = GG_STACK_ARRAY(VkCommandBuffer, recycling_.count());
+        for (unsigned i = 0; i < recycling_.count(); i++) {
+            commandBuffers[i] = recycling_[i].commandBuffer;
+        }
+        vkFreeCommandBuffers(device, commandPool_, recycling_.count(), commandBuffers);
+        recycling_.removeAll();
+        vkDestroyCommandPool(device, commandPool_, nullptr);
+    }
+    VkCommandBuffer getOrCreate(VkDevice device, QueueTracker const& tracker) {
+        if (current_ == VK_NULL_HANDLE) {
+            if (recycling_.count() && tracker.fenceValueIsSignalled(recycling_[0].fenceValue)) {
+                current_ = recycling_.removeFirst().commandBuffer;
+                vkResetCommandBuffer(current_, 0);
             } else {
                 VkCommandBufferAllocateInfo allocInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
                 allocInfo.commandPool = commandPool_;
                 allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
                 allocInfo.commandBufferCount = 1;
-                VkResult result = vkAllocateCommandBuffers(*device_, &allocInfo, &currentCommandBuffer_);
-                assert(result == VK_SUCCESS);
-
-                VkFenceCreateInfo createInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-                result = vkCreateFence(*device_, &createInfo, nullptr, &nextFence_);
+                VkResult result = vkAllocateCommandBuffers(device, &allocInfo, &current_);
                 assert(result == VK_SUCCESS);
             }
-
             VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
             beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-            VkResult result = vkBeginCommandBuffer(currentCommandBuffer_, &beginInfo);
+            VkResult result = vkBeginCommandBuffer(current_, &beginInfo);
             assert(result == VK_SUCCESS);
         }
-        return currentCommandBuffer_;
+        return current_;
     }
-
-    void retireBuffer(VkBuffer buffer, VkCommandBuffer commandBuffer) {
-        assert(commandBuffer == currentCommandBuffer_);
-        bufferDestructionFifo_.add(buffer);
-    }
-
-    void retireImage(VkImage image, VkCommandBuffer commandBuffer) {
-        assert(commandBuffer == currentCommandBuffer_);
-        imageDestructionFifo_.add(image);
-    }
-
-    void retireDeviceMemory(VkDeviceMemory deviceMemory, VkCommandBuffer commandBuffer) {
-        assert(commandBuffer == currentCommandBuffer_);
-        deviceMemoryFreeFifo_.add(deviceMemory);
-    }
-
-    void retireSwapchain(VkSwapchainKHR swapchain, VkCommandBuffer commandBuffer) {
-        assert(commandBuffer == currentCommandBuffer_);
-        swapchainDestructionFifo_.add(swapchain);
-    }
-
-    void retireSurface(VkSurfaceKHR surface, VkCommandBuffer commandBuffer) {
-        assert(commandBuffer == currentCommandBuffer_);
-        surfaceDestructionFifo_.add(surface);
-    }
-
-    void retireRenderPass(VkRenderPass renderPass, VkCommandBuffer commandBuffer) {
-        assert(commandBuffer == currentCommandBuffer_);
-        renderPassDestructionFifo_.add(renderPass);
-    }
-
-    void retirePipeline(VkPipeline pipeline, VkCommandBuffer commandBuffer) {
-        assert(commandBuffer == currentCommandBuffer_);
-        pipelineDestructionFifo_.add(pipeline);
-    }
-
-    void flushAllSwapchains(VkDevice device) {
-        swapchainDestructionFifo_.flushAll(device);
-    }
-
-    void waitForAll() const {
-        if (fences_.count()) {
-            vkWaitForFences(*device_, fences_.frontSpan().count(), fences_.frontSpan().begin(), true, ~0);
-            if (fences_.backSpan().count()) {
-                vkWaitForFences(*device_, fences_.backSpan().count(), fences_.backSpan().begin(), true, ~0);
-            }
+    VkCommandBuffer finish(QueueTracker const& tracker) {
+        if (current_ == VK_NULL_HANDLE) {
+            return VK_NULL_HANDLE;
         }
-    }
-
-    void addWaitSemaphore(VkSemaphore semaphore, VkPipelineStageFlags dstStageMask) {
-        waitSemaphores_.addLast(semaphore);
-        waitDstStageMasks_.addLast(dstStageMask);
-    }
-
-    bool ready() const {
-        return *device_ != VK_NULL_HANDLE;
-    }
-
-    Channel() = default;
-    Channel(VkInstance* instance, VkDevice* device, VkQueue* queue, unsigned queueFamilyIndex)
-        : instance_(instance)
-        , device_(device)
-        , queue_(queue) {
-        if (!ready()) {
-            return;
-        }
-        VkCommandPoolCreateInfo createInfo = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-        createInfo.queueFamilyIndex = queueFamilyIndex;
-        createInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        VkResult result = vkCreateCommandPool(*device_, &createInfo, nullptr, &commandPool_);
+        VkResult result = vkEndCommandBuffer(current_);
         assert(result == VK_SUCCESS);
+        recycling_.addLast({tracker.unsubmittedFenceValue(), current_});
+        return std::exchange(current_, {});
     }
-
-    ~Channel() {
-        if (!ready()) {
-            return;
-        }
-        assert(currentCommandBuffer_ == nullptr);
-        waitForAll();
-        for (VkFence fence : fences_) {
-            vkDestroyFence(*device_, fence, nullptr);
-        }
-        if (commandBuffers_.count()) {
-            vkFreeCommandBuffers(*device_, commandPool_, commandBuffers_.frontSpan().count(), commandBuffers_.frontSpan().begin());
-            if (commandBuffers_.backSpan().count()) {
-                vkFreeCommandBuffers(*device_, commandPool_, commandBuffers_.backSpan().count(), commandBuffers_.backSpan().begin());
-            }
-        }
-        bufferDestructionFifo_.flushAll(*device_);
-        imageDestructionFifo_.flushAll(*device_);
-        deviceMemoryFreeFifo_.flushAll(*device_);
-        swapchainDestructionFifo_.flushAll(*device_);
-        surfaceDestructionFifo_.flushAll(*instance_);
-        renderPassDestructionFifo_.flushAll(*device_);
-        pipelineDestructionFifo_.flushAll(*device_);
-        vkDestroyCommandPool(*device_, commandPool_, nullptr);
-    }
-
 private:
-    VkInstance*const instance_;
-    VkDevice*const device_;
-    VkQueue*const queue_;
-    VkCommandPool commandPool_ = {};
-    VkCommandBuffer currentCommandBuffer_ = {};
-    DeferredDestructionFifo<VkBuffer> bufferDestructionFifo_;
-    DeferredDestructionFifo<VkImage> imageDestructionFifo_;
-    DeferredDestructionFifo<VkDeviceMemory> deviceMemoryFreeFifo_;
-    DeferredDestructionFifo<VkSwapchainKHR> swapchainDestructionFifo_;
-    DeferredDestructionFifo<VkSurfaceKHR> surfaceDestructionFifo_;
-    DeferredDestructionFifo<VkRenderPass> renderPassDestructionFifo_;
-    DeferredDestructionFifo<VkPipeline> pipelineDestructionFifo_;
-    VkFence nextFence_ = {};
-    Ring<VkCommandBuffer> commandBuffers_;
-    Ring<VkFence> fences_;
-    Array<VkSemaphore> waitSemaphores_; // n.b. we don't own these
-    Array<VkPipelineStageFlags> waitDstStageMasks_;
+    struct Recycled {
+        QueueTracker::FenceValue fenceValue;
+        VkCommandBuffer commandBuffer;
+    };
+    VkCommandPool commandPool_;
+    VkCommandBuffer current_ = {};
+    Ring<Recycled> recycling_;
+};
+
+template<class T>
+class DestructionFifo {
+public:
+    ~DestructionFifo() {
+        assert(pending_.count() == 0);
+    }
+    template<class T_Parent>
+    void add(T_Parent parent, T handle, QueueTracker const& tracker) {
+        if (handle) {
+            pending_.addLast({tracker.unsubmittedFenceValue(), handle});
+        }
+    }
+    template<class T_Parent>
+    void flushSignalled(T_Parent parent, QueueTracker const& tracker) {
+        while (pending_.count() && tracker.fenceValueIsSignalled(pending_[0].fenceValue)) {
+            DestroyOverloads::Destroy(parent, pending_.removeFirst().handle, nullptr);
+        }
+    }
+private:
+    struct Pending {
+        QueueTracker::FenceValue fenceValue;
+        T handle;
+    };
+    Ring<Pending> pending_;
 };
 
 }

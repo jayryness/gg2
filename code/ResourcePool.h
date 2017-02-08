@@ -17,7 +17,7 @@ template<class T_Id, class T, class T_ResourceIdTraits = ResourceIdTraitsDefault
 class ResourcePool {
 
 public:
-    auto add(T&& item) {
+    T_Id add(T&& item) {
         T_Id id;
         if (freeList_.count()) {
             unsigned index = freeList_.removeLast();

@@ -85,7 +85,7 @@ int main(int argc, char* argv[]) {
             y = gg::Clamp(y, 0.f, (float)(height - 8));
 
             gg::Rendering rendering = renderingHub.startRendering(pipeline);
-            /*if (frames & 1) */rendering.addImage(x, y, image);
+            rendering.addImage(x, y, image);
             renderingHub.submitRendering(std::move(rendering));
 
             timing.advanceFrame(os);

@@ -105,6 +105,13 @@ public:
         return {data_, std::max(first_ + count_, mask_ + 1) - mask_ - 1};
     }
 
+    std::remove_const_t<T>* linearizeCopy(std::remove_const_t<T>* dest) const {
+        for (unsigned i = 0; i < count_; i++) {
+            ConstructInPlace<T>(dest + i, data_[(first_ + i) & mask_]);
+        }
+        return dest;
+    }
+
 private:
     GG_NO_INLINE void grow(size_t requestedCapacity) {
         assert((unsigned)requestedCapacity > mask_ + 1);

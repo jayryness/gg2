@@ -27,6 +27,7 @@
 
 #endif
 
+// TODO calling alloca inside argument list is sketchy af; msvc does the right thing, not sure about others...
 #define GG_STACK_ARRAY(type, count, ...) gg::ConstructArray<type>(GG_ALLOCA((count)*sizeof(type)), count, __VA_ARGS__)
 
 namespace gg {

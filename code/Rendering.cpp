@@ -158,8 +158,9 @@ struct Rendering::Hub::Platform {
         , device(MakeDevice(physical, errorMsg))
         , graphicsQueue(GetDeviceQueue(device, physical.graphicsQueueFamily, 0))
         , transferQueue(GetDeviceQueue(device, physical.transferQueueFamily, 0))
-        , graphicsChannel(&instance, &device, &graphicsQueue, physical.graphicsQueueFamily)
-        , transferChannel(&instance, &device, &transferQueue, physical.transferQueueFamily) {
+        , graphicsCommandBufferDispenser(device, physical.graphicsQueueFamily)
+        , transferCommandBufferDispenser(device, physical.transferQueueFamily)
+    {
         if (errorMsg && *errorMsg) {
             return;
         }
@@ -341,29 +342,109 @@ struct Rendering::Hub::Platform {
         vkDestroyShaderModule(device, presentVertexShader, nullptr);
         vkDestroyShaderModule(device, spriteVertexShader, nullptr);
         vkDestroySampler(device, linearBlackBorderSampler, nullptr);
-        vkDestroySemaphore(device, transfersFinishedSemaphore, nullptr);
-        vkDestroySemaphore(device, renderingFinishedSemaphore, nullptr);
         if (presentImageAcquiredFence) {
             vkDestroyFence(device, presentImageAcquiredFence, nullptr);
         }
         if (presentImageAcquiredSemaphore) {
             vkDestroySemaphore(device, presentImageAcquiredSemaphore, nullptr);
         }
-        transferChannel.flush();
-        graphicsChannel.flush();
+        flushWaitAndPurgeTransfers();
+        transferCommandBufferDispenser.teardown(device);
+
+        flushWaitAndPurgeGraphics();
+        graphicsCommandBufferDispenser.teardown(device);
+
+        vkDestroySemaphore(device, transfersFinishedSemaphore, nullptr);
+        vkDestroySemaphore(device, renderingFinishedSemaphore, nullptr);
+        vkDestroyDevice(device, nullptr);
+        vkDestroyInstance(instance, nullptr);
+    }
+    void flushTransfers() {
+        VkCommandBuffer commandBuffer = transferCommandBufferDispenser.finish(transferQueueTracker);
+        if (commandBuffer != VK_NULL_HANDLE) {
+            VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+            submitInfo.commandBufferCount = 1;
+            submitInfo.pCommandBuffers = &commandBuffer;
+            submitInfo.signalSemaphoreCount = 1;
+            submitInfo.pSignalSemaphores = &transfersFinishedSemaphore;
+            transferQueueTracker.doSubmission(device, transferQueue, submitInfo);
+            graphicsWaitSemaphores.addLast(transfersFinishedSemaphore);
+            graphicsWaitDstStageMasks.addLast(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+        }
+    }
+    void purgeTransferResources() {
+        transferBufferDestructionFifo.flushSignalled(device, transferQueueTracker);
+        transferDeviceMemoryFreeFifo.flushSignalled(device, transferQueueTracker);
+    }
+    void flushWaitAndPurgeTransfers() {
+        transferCommandBufferDispenser.getOrCreate(device, transferQueueTracker);   // ensure something to submit, so final fence can get signalled
+        flushTransfers();
+        transferQueueTracker.waitForAll(device);
+        purgeTransferResources();
+    }
+    void flushGraphics(Span<VkSemaphore> signalSemaphores) {
+        VkCommandBuffer commandBuffer = graphicsCommandBufferDispenser.finish(graphicsQueueTracker);
+        if (commandBuffer != VK_NULL_HANDLE) {
+            assert(graphicsWaitSemaphores.count() == graphicsWaitDstStageMasks.count());
+            VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+            submitInfo.waitSemaphoreCount = graphicsWaitSemaphores.count();
+            submitInfo.pWaitSemaphores = graphicsWaitSemaphores.begin();
+            submitInfo.pWaitDstStageMask = graphicsWaitDstStageMasks.begin();
+            submitInfo.commandBufferCount = 1;
+            submitInfo.pCommandBuffers = &commandBuffer;
+            submitInfo.signalSemaphoreCount = signalSemaphores.count();
+            submitInfo.pSignalSemaphores = signalSemaphores.begin();
+
+            graphicsQueueTracker.doSubmission(device, graphicsQueue, submitInfo);
+
+            graphicsWaitSemaphores.removeAll();
+            graphicsWaitDstStageMasks.removeAll();
+        }
+    }
+    void purgeGraphicsResources() {
+        graphicsBufferDestructionFifo.flushSignalled(device, graphicsQueueTracker);
+        graphicsImageDestructionFifo.flushSignalled(device, graphicsQueueTracker);
+        graphicsDeviceMemoryFreeFifo.flushSignalled(device, graphicsQueueTracker);
+        graphicsSwapchainDestructionFifo.flushSignalled(device, graphicsQueueTracker);
+        graphicsSurfaceDestructionFifo.flushSignalled(instance, graphicsQueueTracker);
+        graphicsRenderPassDestructionFifo.flushSignalled(device, graphicsQueueTracker);
+        graphicsPipelineDestructionFifo.flushSignalled(device, graphicsQueueTracker);
+    }
+    void flushWaitAndPurgeGraphics() {
+        graphicsCommandBufferDispenser.getOrCreate(device, graphicsQueueTracker);   // ensure something to submit, so final fence can get signalled
+        flushGraphics({});
+        graphicsQueueTracker.waitForAll(device);
+        purgeGraphicsResources();
     }
 
-    gg::vk::Destructomatic<VkInstance, vkDestroyInstance> instance;
+    VkInstance instance;
     PhysicalDeviceInfo physical;
-    gg::vk::Destructomatic<VkDevice, vkDestroyDevice> device;
+    VkDevice device;
     VkQueue graphicsQueue = nullptr;
     VkQueue transferQueue = nullptr;
-    gg::vk::Channel graphicsChannel;
-    gg::vk::Channel transferChannel;
-    VkSemaphore presentImageAcquiredSemaphore = {};
-    VkFence presentImageAcquiredFence = {};
+
     VkSemaphore renderingFinishedSemaphore = {};
     VkSemaphore transfersFinishedSemaphore = {};
+
+    gg::vk::CommandBufferDispenser graphicsCommandBufferDispenser;
+    gg::vk::QueueTracker graphicsQueueTracker;
+    gg::vk::DestructionFifo<VkBuffer> graphicsBufferDestructionFifo;
+    gg::vk::DestructionFifo<VkImage> graphicsImageDestructionFifo;
+    gg::vk::DestructionFifo<VkDeviceMemory> graphicsDeviceMemoryFreeFifo;
+    gg::vk::DestructionFifo<VkSwapchainKHR> graphicsSwapchainDestructionFifo;
+    gg::vk::DestructionFifo<VkSurfaceKHR> graphicsSurfaceDestructionFifo;
+    gg::vk::DestructionFifo<VkRenderPass> graphicsRenderPassDestructionFifo;
+    gg::vk::DestructionFifo<VkPipeline> graphicsPipelineDestructionFifo;
+    Array<VkSemaphore> graphicsWaitSemaphores;
+    Array<VkPipelineStageFlags> graphicsWaitDstStageMasks;
+
+    gg::vk::CommandBufferDispenser transferCommandBufferDispenser;
+    gg::vk::QueueTracker transferQueueTracker;
+    gg::vk::DestructionFifo<VkBuffer> transferBufferDestructionFifo;
+    gg::vk::DestructionFifo<VkDeviceMemory> transferDeviceMemoryFreeFifo;
+
+    VkSemaphore presentImageAcquiredSemaphore = {};
+    VkFence presentImageAcquiredFence = {};
     VkSampler linearBlackBorderSampler = {};
     VkShaderModule spriteVertexShader = {};
     VkShaderModule presentVertexShader = {};
@@ -446,12 +527,15 @@ struct Rendering::Hub::ImageResource : public Resource<ImageId> {
     ImageResource() = default;
     ImageResource(ImageResource&&) = default;
     ~ImageResource() {
-        if (imageView)
+        if (imageView) {
             vkDestroyImageView(device, imageView, nullptr);
-        if (deviceMemory)
+        }
+        if (deviceMemory) {
             vkFreeMemory(device, deviceMemory, nullptr);
-        if (image)
+        }
+        if (image) {
             vkDestroyImage(device, image, nullptr);
+        }
     }
     gg::vk::MovableHandle<VkImage> image;
     gg::vk::MovableHandle<VkDeviceMemory> deviceMemory;
@@ -466,8 +550,9 @@ struct Rendering::Hub::TilesetResource : public Resource<TilesetId> {
     TilesetResource() = default;
     TilesetResource(TilesetResource&&) = default;
     ~TilesetResource() {
-        if (image)
+        if (image) {
             vkDestroyImage(device, image, nullptr);
+        }
     }
     gg::vk::MovableHandle<VkImage> image;
 };
@@ -497,10 +582,12 @@ struct Rendering::Hub::Platform::StagingBuffer {
         vkBindBufferMemory(device, buffer, deviceMemory, 0);
     }
     ~StagingBuffer() {
-        if (buffer)
+        if (buffer) {
             vkDestroyBuffer(device, buffer, nullptr);
-        if (deviceMemory)
+        }
+        if (deviceMemory) {
             vkFreeMemory(device, deviceMemory, nullptr);
+        }
     }
 
     VkDevice device;
@@ -516,14 +603,14 @@ Rendering::Hub::Hub(char const** errorMsg) {
 }
 
 Rendering::Hub::~Hub() {
-    VkCommandBuffer graphicsCommandBuffer = platform_->graphicsChannel.beginOrGetCurrentCommandBuffer();
+    Platform& platform = *platform_;
     for (PresentationSurface& presentationSurface : presentationSurfaces_) {
         if (presentationSurface.swapchain) {
-            platform_->graphicsChannel.retireSwapchain(presentationSurface.swapchain, graphicsCommandBuffer);
+            platform.graphicsSwapchainDestructionFifo.add(platform.device, presentationSurface.swapchain, platform.graphicsQueueTracker);
         }
-        platform_->graphicsChannel.retirePipeline(presentationSurface.presentPipeline, graphicsCommandBuffer);
-        platform_->graphicsChannel.retireRenderPass(presentationSurface.presentRenderPass, graphicsCommandBuffer);
-        platform_->graphicsChannel.retireSurface(presentationSurface.surface, graphicsCommandBuffer);
+        platform.graphicsPipelineDestructionFifo.add(platform.device, presentationSurface.presentPipeline, platform.graphicsQueueTracker);
+        platform.graphicsRenderPassDestructionFifo.add(platform.device, presentationSurface.presentRenderPass, platform.graphicsQueueTracker);
+        platform.graphicsSurfaceDestructionFifo.add(platform.instance, presentationSurface.surface, platform.graphicsQueueTracker);
     }
 }
 
@@ -677,6 +764,7 @@ Rendering::Hub::PresentationSurface* Rendering::Hub::maintainPresentationSurface
     if (!displayWindow) {
         return nullptr;
     }
+    Platform& platform = *platform_;
 
     PresentationSurface*const presentationSurface = presentationSurfaces_.fetch(displayWindow);
 
@@ -687,7 +775,7 @@ Rendering::Hub::PresentationSurface* Rendering::Hub::maintainPresentationSurface
     }
 
     VkSurfaceCapabilitiesKHR surfaceCapabilities;
-    VkResult result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(platform_->physical.device, presentationSurface->surface, &surfaceCapabilities);
+    VkResult result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(platform.physical.device, presentationSurface->surface, &surfaceCapabilities);
     if (result == VK_ERROR_SURFACE_LOST_KHR || surfaceCapabilities.currentExtent.width < surfaceCapabilities.minImageExtent.width || surfaceCapabilities.currentExtent.height < surfaceCapabilities.minImageExtent.height) {
         return presentationSurface;
     }
@@ -711,14 +799,12 @@ Rendering::Hub::PresentationSurface* Rendering::Hub::maintainPresentationSurface
     createInfo.oldSwapchain = presentationSurface->swapchain;
 
     presentationSurface->swapchain = {};
-    result = vkCreateSwapchainKHR(platform_->device, &createInfo, nullptr, &presentationSurface->swapchain);
+    result = vkCreateSwapchainKHR(platform.device, &createInfo, nullptr, &presentationSurface->swapchain);
     assert(result == VK_SUCCESS);
 
     if (createInfo.oldSwapchain) {
-        platform_->graphicsChannel.retireSwapchain(createInfo.oldSwapchain, platform_->graphicsChannel.beginOrGetCurrentCommandBuffer());
-        platform_->graphicsChannel.flush();
-        platform_->graphicsChannel.waitForAll();
-        platform_->graphicsChannel.flushAllSwapchains(platform_->device);
+        platform.graphicsSwapchainDestructionFifo.add(platform.device, createInfo.oldSwapchain, platform.graphicsQueueTracker);
+        platform.flushWaitAndPurgeGraphics();
     }
 
     uint32_t imageCount = gg::CountOf(presentationSurface->swapchainImages);
@@ -730,7 +816,8 @@ Rendering::Hub::PresentationSurface* Rendering::Hub::maintainPresentationSurface
 }
 
 Rendering::ImageId Rendering::Hub::createImage(Span<uint8_t> const& data, RenderFormat const& format, unsigned width, unsigned height) {
-    ImageResource imageResource = {platform_->device, {}};
+    Platform& platform = *platform_;
+    ImageResource imageResource = {platform.device, {}};
 
     imageResource.width = width;
     imageResource.height = height;
@@ -750,7 +837,7 @@ Rendering::ImageId Rendering::Hub::createImage(Span<uint8_t> const& data, Render
         createInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         createInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-        VkResult result = vkCreateImage(platform_->device, &createInfo, nullptr, &imageResource.image);
+        VkResult result = vkCreateImage(platform.device, &createInfo, nullptr, &imageResource.image);
         assert(result == VK_SUCCESS);
     }
     if (!imageResource.image)
@@ -759,25 +846,25 @@ Rendering::ImageId Rendering::Hub::createImage(Span<uint8_t> const& data, Render
     VkMemoryRequirements memoryRequirements = {};
     {
         // todo proper suballocation from big pages...
-        vkGetImageMemoryRequirements(platform_->device, imageResource.image, &memoryRequirements);
+        vkGetImageMemoryRequirements(platform.device, imageResource.image, &memoryRequirements);
 
         VkMemoryAllocateInfo imageAllocateInfo = {};
         imageAllocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         imageAllocateInfo.allocationSize = memoryRequirements.size;
-        imageAllocateInfo.memoryTypeIndex = gg::vk::FindMemoryType(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, memoryRequirements.memoryTypeBits, platform_->physical.memoryProperties, nullptr);
+        imageAllocateInfo.memoryTypeIndex = gg::vk::FindMemoryType(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, memoryRequirements.memoryTypeBits, platform.physical.memoryProperties, nullptr);
 
-        VkResult result = vkAllocateMemory(platform_->device, &imageAllocateInfo, NULL, &imageResource.deviceMemory);
+        VkResult result = vkAllocateMemory(platform.device, &imageAllocateInfo, NULL, &imageResource.deviceMemory);
         assert(result == VK_SUCCESS);
     }
     if (!imageResource.deviceMemory)
         return {};
 
-    if (VK_SUCCESS != vkBindImageMemory(platform_->device, imageResource.image, imageResource.deviceMemory, 0)) {
+    if (VK_SUCCESS != vkBindImageMemory(platform.device, imageResource.image, imageResource.deviceMemory, 0)) {
         assert(false);
         return {};
     }
 
-    VkCommandBuffer const transferCmdBuffer = platform_->transferChannel.beginOrGetCurrentCommandBuffer();
+    VkCommandBuffer const transferCmdBuffer = platform.transferCommandBufferDispenser.getOrCreate(platform.device, platform.transferQueueTracker);
 
     {
         VkImageMemoryBarrier imageBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
@@ -785,8 +872,8 @@ Rendering::ImageId Rendering::Hub::createImage(Span<uint8_t> const& data, Render
         imageBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         imageBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         imageBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        imageBarrier.srcQueueFamilyIndex = platform_->physical.transferQueueFamily;
-        imageBarrier.dstQueueFamilyIndex = platform_->physical.graphicsQueueFamily;
+        imageBarrier.srcQueueFamilyIndex = platform.physical.transferQueueFamily;
+        imageBarrier.dstQueueFamilyIndex = platform.physical.graphicsQueueFamily;
         imageBarrier.image = imageResource.image;
         imageBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         imageBarrier.subresourceRange.levelCount = 1;
@@ -804,7 +891,7 @@ Rendering::ImageId Rendering::Hub::createImage(Span<uint8_t> const& data, Render
         Platform::StagingBuffer stagingBuffer(*platform_, data.count());
         uint8_t* mappedData = nullptr;
         if (data.count()) {
-            vkMapMemory(platform_->device, stagingBuffer.deviceMemory, 0, data.count(), 0, (void**)&mappedData);
+            vkMapMemory(platform.device, stagingBuffer.deviceMemory, 0, data.count(), 0, (void**)&mappedData);
             memset(mappedData, -1, data.count());
 
             unsigned rowPitch = data.count() / height;
@@ -812,7 +899,7 @@ Rendering::ImageId Rendering::Hub::createImage(Span<uint8_t> const& data, Render
                 memcpy(mappedData + y*rowPitch, &data[y*rowPitch], rowPitch);
             }
 
-            vkUnmapMemory(platform_->device, stagingBuffer.deviceMemory);
+            vkUnmapMemory(platform.device, stagingBuffer.deviceMemory);
 
             VkBufferImageCopy region = {};
             region.bufferRowLength = width;
@@ -825,8 +912,8 @@ Rendering::ImageId Rendering::Hub::createImage(Span<uint8_t> const& data, Render
             vkCmdCopyBufferToImage(transferCmdBuffer, stagingBuffer.buffer, imageResource.image,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 1, &region);
-            platform_->transferChannel.retireBuffer(std::exchange(stagingBuffer.buffer, {}), transferCmdBuffer);
-            platform_->transferChannel.retireDeviceMemory(std::exchange(stagingBuffer.deviceMemory, {}), transferCmdBuffer);
+            platform.transferBufferDestructionFifo.add(platform.device, std::exchange(stagingBuffer.buffer, {}), platform.transferQueueTracker);
+            platform.transferDeviceMemoryFreeFifo.add(platform.device, std::exchange(stagingBuffer.deviceMemory, {}), platform.transferQueueTracker);
         }
     }
     {
@@ -835,12 +922,12 @@ Rendering::ImageId Rendering::Hub::createImage(Span<uint8_t> const& data, Render
         imageBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
         imageBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         imageBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imageBarrier.srcQueueFamilyIndex = platform_->physical.transferQueueFamily;
-        imageBarrier.dstQueueFamilyIndex = platform_->physical.graphicsQueueFamily;
+        imageBarrier.srcQueueFamilyIndex = platform.physical.transferQueueFamily;
+        imageBarrier.dstQueueFamilyIndex = platform.physical.graphicsQueueFamily;
         imageBarrier.image = imageResource.image;
         imageBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         vkCmdPipelineBarrier(
-            platform_->graphicsChannel.beginOrGetCurrentCommandBuffer(),
+            platform.graphicsCommandBufferDispenser.getOrCreate(platform.device, platform.graphicsQueueTracker),
             VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
             0,
@@ -856,7 +943,7 @@ Rendering::ImageId Rendering::Hub::createImage(Span<uint8_t> const& data, Render
         createInfo.format = imageResource.format;
         createInfo.components = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
         createInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        VkResult result = vkCreateImageView(platform_->device, &createInfo, nullptr, &imageResource.imageView);
+        VkResult result = vkCreateImageView(platform.device, &createInfo, nullptr, &imageResource.imageView);
         assert(result == VK_SUCCESS);
     }
     if (!imageResource.imageView)
@@ -892,10 +979,10 @@ void Rendering::Hub::destroyPipeline(PipelineId id) {
 }
 
 void Rendering::Hub::destroyImage(ImageId id) {
+    Platform& platform = *platform_;
     ImageResource imageResource = imageResources_.remove(id);
-    VkCommandBuffer commandBuffer = platform_->graphicsChannel.beginOrGetCurrentCommandBuffer();
-    platform_->graphicsChannel.retireImage(std::exchange(imageResource.image, {}), commandBuffer);
-    platform_->graphicsChannel.retireDeviceMemory(std::exchange(imageResource.deviceMemory, {}), commandBuffer);
+    platform.graphicsImageDestructionFifo.add(platform.device, std::exchange(imageResource.image, {}), platform.graphicsQueueTracker);
+    platform.graphicsDeviceMemoryFreeFifo.add(platform.device, std::exchange(imageResource.deviceMemory, {}), platform.graphicsQueueTracker);
     // todo retire imageview as well
 }
 
@@ -904,10 +991,8 @@ void Rendering::Hub::destroyTileset(TilesetId id) {
 }
 
 void Rendering::Hub::submitQueuedUploads() {
-    Platform& platform = *platform_;
-    if (platform.transferChannel.flush({&platform.transfersFinishedSemaphore, 1})) {
-        platform.graphicsChannel.addWaitSemaphore(platform.transfersFinishedSemaphore, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
-    }
+    platform_->flushTransfers();
+    platform_->purgeTransferResources();
 }
 
 Rendering Rendering::Hub::startRendering(PipelineId pipelineId) {
@@ -925,7 +1010,7 @@ void Rendering::Hub::submitRendering(Rendering&& rendering) {
     PresentationSurface*const presentationSurface = maintainPresentationSurface(pipelineResource->displayWindow);
     VkImage presentImage = {};
 
-    VkCommandBuffer graphicsCommandBuffer = platform.graphicsChannel.beginOrGetCurrentCommandBuffer();
+    VkCommandBuffer graphicsCommandBuffer = platform.graphicsCommandBufferDispenser.getOrCreate(platform.device, platform.graphicsQueueTracker);
 
     if (presentationSurface && presentationSurface->swapchain) {
         presentationSurface->acquiredImageIndex = ~0;
@@ -936,7 +1021,8 @@ void Rendering::Hub::submitRendering(Rendering&& rendering) {
     }
 
     if (presentImage) {
-        platform.graphicsChannel.addWaitSemaphore(platform.presentImageAcquiredSemaphore, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        platform.graphicsWaitSemaphores.addLast(platform.presentImageAcquiredSemaphore);
+        platform.graphicsWaitDstStageMasks.addLast(VK_PIPELINE_STAGE_TRANSFER_BIT);
 
         VkImageSubresourceRange subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         VkImageMemoryBarrier imageBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
@@ -983,7 +1069,8 @@ void Rendering::Hub::submitRendering(Rendering&& rendering) {
             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageBarrier);
     }
 
-    platform.graphicsChannel.flush();
+    platform.flushGraphics({});
+    platform.purgeGraphicsResources();
 
     if (presentImage) {
         VkPresentInfoKHR presentInfo = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
